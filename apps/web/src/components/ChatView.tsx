@@ -154,6 +154,7 @@ import {
   LastInvokedScriptByProjectSchema,
   PullRequestDialogState,
   readFileAsDataUrl,
+  resolveComposerDraftText,
   revokeBlobPreviewUrl,
   revokeUserMessagePreviewUrls,
   SendPhase,
@@ -242,6 +243,7 @@ export default function ChatView({ threadId }: ChatViewProps) {
     (store) => store.draftThreadsByThreadId[threadId] ?? null,
   );
   const promptRef = useRef(prompt);
+  const pendingCustomAnswerRef = useRef<string | null>(null);
   const [isDragOverComposer, setIsDragOverComposer] = useState(false);
   const [expandedImage, setExpandedImage] = useState<ExpandedImagePreview | null>(null);
   const [optimisticUserMessages, setOptimisticUserMessages] = useState<ChatMessage[]>([]);
@@ -625,6 +627,10 @@ export default function ChatView({ threadId }: ChatViewProps) {
   const activePendingIsResponding = activePendingUserInput
     ? respondingUserInputRequestIds.includes(activePendingUserInput.requestId)
     : false;
+  const visibleComposerValue = resolveComposerDraftText({
+    prompt,
+    pendingCustomAnswer: activePendingProgress?.customAnswer ?? null,
+  });
   const activeProposedPlan = useMemo(() => {
     if (!latestTurnSettled) {
       return null;
@@ -650,47 +656,6 @@ export default function ChatView({ threadId }: ChatViewProps) {
     pendingUserInputs.length > 0 ||
     (showPlanFollowUpPrompt && activeProposedPlan !== null);
   const composerFooterHasWideActions = showPlanFollowUpPrompt || activePendingProgress !== null;
-  const lastSyncedPendingInputRef = useRef<{
-    requestId: string | null;
-    questionId: string | null;
-  } | null>(null);
-  useEffect(() => {
-    const nextCustomAnswer = activePendingProgress?.customAnswer;
-    if (typeof nextCustomAnswer !== "string") {
-      lastSyncedPendingInputRef.current = null;
-      return;
-    }
-    const nextRequestId = activePendingUserInput?.requestId ?? null;
-    const nextQuestionId = activePendingProgress?.activeQuestion?.id ?? null;
-    const questionChanged =
-      lastSyncedPendingInputRef.current?.requestId !== nextRequestId ||
-      lastSyncedPendingInputRef.current?.questionId !== nextQuestionId;
-    const textChangedExternally = promptRef.current !== nextCustomAnswer;
-
-    lastSyncedPendingInputRef.current = {
-      requestId: nextRequestId,
-      questionId: nextQuestionId,
-    };
-
-    if (!questionChanged && !textChangedExternally) {
-      return;
-    }
-
-    promptRef.current = nextCustomAnswer;
-    const nextCursor = collapseExpandedComposerCursor(nextCustomAnswer, nextCustomAnswer.length);
-    setComposerCursor(nextCursor);
-    setComposerTrigger(
-      detectComposerTrigger(
-        nextCustomAnswer,
-        expandCollapsedComposerCursor(nextCustomAnswer, nextCursor),
-      ),
-    );
-    setComposerHighlightedItemId(null);
-  }, [
-    activePendingProgress?.customAnswer,
-    activePendingUserInput?.requestId,
-    activePendingProgress?.activeQuestion?.id,
-  ]);
   useEffect(() => {
     attachmentPreviewHandoffByMessageIdRef.current = attachmentPreviewHandoffByMessageId;
   }, [attachmentPreviewHandoffByMessageId]);
@@ -1762,6 +1727,21 @@ export default function ChatView({ threadId }: ChatViewProps) {
   }, [prompt]);
 
   useEffect(() => {
+    const nextComposerValue = resolveComposerDraftText({
+      prompt,
+      pendingCustomAnswer: activePendingProgress?.customAnswer ?? null,
+    });
+    const nextCursor = collapseExpandedComposerCursor(nextComposerValue, nextComposerValue.length);
+    setComposerHighlightedItemId(null);
+    setComposerCursor(nextCursor);
+    setComposerTrigger(detectComposerTrigger(nextComposerValue, nextComposerValue.length));
+  }, [activePendingProgress?.activeQuestion?.id, activePendingProgress?.customAnswer, prompt]);
+
+  useEffect(() => {
+    pendingCustomAnswerRef.current = activePendingProgress?.customAnswer ?? null;
+  }, [activePendingProgress?.customAnswer]);
+
+  useEffect(() => {
     setOptimisticUserMessages((existing) => {
       for (const message of existing) {
         revokeUserMessagePreviewUrls(message);
@@ -2202,7 +2182,7 @@ export default function ChatView({ threadId }: ChatViewProps) {
       onAdvanceActivePendingUserInput();
       return;
     }
-    const trimmed = prompt.trim();
+    const trimmed = visibleComposerValue.trim();
     if (showPlanFollowUpPrompt && activeProposedPlan) {
       const followUp = resolvePlanFollowUpSubmission({
         draftText: trimmed,
@@ -2444,7 +2424,7 @@ export default function ChatView({ threadId }: ChatViewProps) {
       }
       if (
         !turnStartSucceeded &&
-        promptRef.current.length === 0 &&
+        visibleComposerValue.length === 0 &&
         composerImagesRef.current.length === 0
       ) {
         setOptimisticUserMessages((existing) => {
@@ -2567,39 +2547,7 @@ export default function ChatView({ threadId }: ChatViewProps) {
           },
         },
       }));
-      promptRef.current = "";
-      setComposerCursor(0);
-      setComposerTrigger(null);
-    },
-    [activePendingUserInput],
-  );
-
-  const onChangeActivePendingUserInputCustomAnswer = useCallback(
-    (
-      questionId: string,
-      value: string,
-      nextCursor: number,
-      expandedCursor: number,
-      cursorAdjacentToMention: boolean,
-    ) => {
-      if (!activePendingUserInput) {
-        return;
-      }
-      promptRef.current = value;
-      setPendingUserInputAnswersByRequestId((existing) => ({
-        ...existing,
-        [activePendingUserInput.requestId]: {
-          ...existing[activePendingUserInput.requestId],
-          [questionId]: setPendingUserInputCustomAnswer(
-            existing[activePendingUserInput.requestId]?.[questionId],
-            value,
-          ),
-        },
-      }));
-      setComposerCursor(nextCursor);
-      setComposerTrigger(
-        cursorAdjacentToMention ? null : detectComposerTrigger(value, expandedCursor),
-      );
+      pendingCustomAnswerRef.current = "";
     },
     [activePendingUserInput],
   );
@@ -2924,7 +2872,10 @@ export default function ChatView({ threadId }: ChatViewProps) {
       replacement: string,
       options?: { expectedText?: string },
     ): boolean => {
-      const currentText = promptRef.current;
+      const activePendingQuestion = activePendingProgress?.activeQuestion;
+      const currentText = activePendingQuestion
+        ? activePendingProgress.customAnswer
+        : visibleComposerValue;
       const safeStart = Math.max(0, Math.min(currentText.length, rangeStart));
       const safeEnd = Math.max(safeStart, Math.min(currentText.length, rangeEnd));
       if (
@@ -2933,11 +2884,10 @@ export default function ChatView({ threadId }: ChatViewProps) {
       ) {
         return false;
       }
-      const next = replaceTextRange(promptRef.current, rangeStart, rangeEnd, replacement);
+      const next = replaceTextRange(currentText, rangeStart, rangeEnd, replacement);
       const nextCursor = collapseExpandedComposerCursor(next.text, next.cursor);
-      promptRef.current = next.text;
-      const activePendingQuestion = activePendingProgress?.activeQuestion;
       if (activePendingQuestion && activePendingUserInput) {
+        pendingCustomAnswerRef.current = next.text;
         setPendingUserInputAnswersByRequestId((existing) => ({
           ...existing,
           [activePendingUserInput.requestId]: {
@@ -2949,18 +2899,27 @@ export default function ChatView({ threadId }: ChatViewProps) {
           },
         }));
       } else {
+        promptRef.current = next.text;
         setPrompt(next.text);
       }
-      setComposerCursor(nextCursor);
-      setComposerTrigger(
-        detectComposerTrigger(next.text, expandCollapsedComposerCursor(next.text, nextCursor)),
-      );
-      window.requestAnimationFrame(() => {
-        composerEditorRef.current?.focusAt(nextCursor);
-      });
+      if (!activePendingQuestion) {
+        setComposerCursor(nextCursor);
+        setComposerTrigger(
+          detectComposerTrigger(next.text, expandCollapsedComposerCursor(next.text, nextCursor)),
+        );
+        window.requestAnimationFrame(() => {
+          composerEditorRef.current?.focusAt(nextCursor);
+        });
+      }
       return true;
     },
-    [activePendingProgress?.activeQuestion, activePendingUserInput, setPrompt],
+    [
+      activePendingProgress?.customAnswer,
+      activePendingProgress?.activeQuestion,
+      activePendingUserInput,
+      setPrompt,
+      visibleComposerValue,
+    ],
   );
 
   const readComposerSnapshot = useCallback((): {
@@ -2973,11 +2932,11 @@ export default function ChatView({ threadId }: ChatViewProps) {
       return editorSnapshot;
     }
     return {
-      value: promptRef.current,
+      value: visibleComposerValue,
       cursor: composerCursor,
-      expandedCursor: expandCollapsedComposerCursor(promptRef.current, composerCursor),
+      expandedCursor: expandCollapsedComposerCursor(visibleComposerValue, composerCursor),
     };
-  }, [composerCursor]);
+  }, [composerCursor, visibleComposerValue]);
 
   const resolveActiveComposerTrigger = useCallback((): {
     snapshot: { value: string; cursor: number; expandedCursor: number };
@@ -3094,29 +3053,29 @@ export default function ChatView({ threadId }: ChatViewProps) {
       expandedCursor: number,
       cursorAdjacentToMention: boolean,
     ) => {
-      if (activePendingProgress?.activeQuestion && activePendingUserInput) {
-        onChangeActivePendingUserInputCustomAnswer(
-          activePendingProgress.activeQuestion.id,
-          nextPrompt,
-          nextCursor,
-          expandedCursor,
-          cursorAdjacentToMention,
-        );
-        return;
+      const activePendingQuestion = activePendingProgress?.activeQuestion;
+      if (activePendingQuestion && activePendingUserInput) {
+        pendingCustomAnswerRef.current = nextPrompt;
+        setPendingUserInputAnswersByRequestId((existing) => ({
+          ...existing,
+          [activePendingUserInput.requestId]: {
+            ...existing[activePendingUserInput.requestId],
+            [activePendingQuestion.id]: setPendingUserInputCustomAnswer(
+              existing[activePendingUserInput.requestId]?.[activePendingQuestion.id],
+              nextPrompt,
+            ),
+          },
+        }));
+      } else {
+        promptRef.current = nextPrompt;
+        setPrompt(nextPrompt);
       }
-      promptRef.current = nextPrompt;
-      setPrompt(nextPrompt);
       setComposerCursor(nextCursor);
       setComposerTrigger(
         cursorAdjacentToMention ? null : detectComposerTrigger(nextPrompt, expandedCursor),
       );
     },
-    [
-      activePendingProgress?.activeQuestion,
-      activePendingUserInput,
-      onChangeActivePendingUserInputCustomAnswer,
-      setPrompt,
-    ],
+    [activePendingProgress?.activeQuestion, activePendingUserInput, setPrompt],
   );
 
   const onComposerCommandKey = (
@@ -3436,13 +3395,7 @@ export default function ChatView({ threadId }: ChatViewProps) {
                     )}
                   <ComposerPromptEditor
                     ref={composerEditorRef}
-                    value={
-                      isComposerApprovalState
-                        ? ""
-                        : activePendingProgress
-                          ? activePendingProgress.customAnswer
-                          : prompt
-                    }
+                    value={isComposerApprovalState ? "" : visibleComposerValue}
                     cursor={composerCursor}
                     onChange={onPromptChange}
                     onCommandKeyDown={onComposerCommandKey}
