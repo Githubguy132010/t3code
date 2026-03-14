@@ -244,6 +244,10 @@ export default function ChatView({ threadId }: ChatViewProps) {
   );
   const promptRef = useRef(prompt);
   const pendingCustomAnswerRef = useRef<string | null>(null);
+  const pendingCustomAnswerSelectionRef = useRef<{
+    cursor: number;
+    trigger: ComposerTrigger | null;
+  } | null>(null);
   const [isDragOverComposer, setIsDragOverComposer] = useState(false);
   const [expandedImage, setExpandedImage] = useState<ExpandedImagePreview | null>(null);
   const [optimisticUserMessages, setOptimisticUserMessages] = useState<ChatMessage[]>([]);
@@ -1731,10 +1735,17 @@ export default function ChatView({ threadId }: ChatViewProps) {
       prompt,
       pendingCustomAnswer: activePendingProgress?.customAnswer ?? null,
     });
-    const nextCursor = collapseExpandedComposerCursor(nextComposerValue, nextComposerValue.length);
+    const pendingSelection = pendingCustomAnswerSelectionRef.current;
+    const nextCursor =
+      pendingSelection?.cursor ??
+      collapseExpandedComposerCursor(nextComposerValue, nextComposerValue.length);
     setComposerHighlightedItemId(null);
     setComposerCursor(nextCursor);
-    setComposerTrigger(detectComposerTrigger(nextComposerValue, nextComposerValue.length));
+    setComposerTrigger(
+      pendingSelection?.trigger ??
+        detectComposerTrigger(nextComposerValue, nextComposerValue.length),
+    );
+    pendingCustomAnswerSelectionRef.current = null;
   }, [activePendingProgress?.activeQuestion?.id, activePendingProgress?.customAnswer, prompt]);
 
   useEffect(() => {
@@ -2886,8 +2897,16 @@ export default function ChatView({ threadId }: ChatViewProps) {
       }
       const next = replaceTextRange(currentText, rangeStart, rangeEnd, replacement);
       const nextCursor = collapseExpandedComposerCursor(next.text, next.cursor);
+      const nextTrigger = detectComposerTrigger(
+        next.text,
+        expandCollapsedComposerCursor(next.text, nextCursor),
+      );
       if (activePendingQuestion && activePendingUserInput) {
         pendingCustomAnswerRef.current = next.text;
+        pendingCustomAnswerSelectionRef.current = {
+          cursor: nextCursor,
+          trigger: nextTrigger,
+        };
         setPendingUserInputAnswersByRequestId((existing) => ({
           ...existing,
           [activePendingUserInput.requestId]: {
@@ -2904,9 +2923,7 @@ export default function ChatView({ threadId }: ChatViewProps) {
       }
       if (!activePendingQuestion) {
         setComposerCursor(nextCursor);
-        setComposerTrigger(
-          detectComposerTrigger(next.text, expandCollapsedComposerCursor(next.text, nextCursor)),
-        );
+        setComposerTrigger(nextTrigger);
         window.requestAnimationFrame(() => {
           composerEditorRef.current?.focusAt(nextCursor);
         });
