@@ -79,9 +79,9 @@ export function CloudExecutionSettings({ environmentId }: { environmentId: Envir
           Connect selected Box
         </Button>
         <p>
-          Key stays in this T3 server's memory until pause or shutdown. Cleanup starts after 27½ minutes
-          to reserve time for three attempts. No automatic recovery after
-          server failure. Use the Upstash console if pause is unconfirmed.
+          Key stays in this T3 server's memory until pause or shutdown. Cleanup starts after 27½
+          minutes to reserve time for three attempts. No automatic recovery after server failure.
+          Use the Upstash console if pause is unconfirmed.
         </p>
         <Button
           disabled={pending || snapshot?.phase !== "ready"}

@@ -174,7 +174,10 @@ export class UpstashBoxSession {
         throw failure();
       }
     } else if (command.action === "export") {
-      if (this.#phase !== "running" || (this.#deadline !== null && this.now() >= this.#deadline - 150_000))
+      if (
+        this.#phase !== "running" ||
+        (this.#deadline !== null && this.now() >= this.#deadline - 150_000)
+      )
         throw failure();
       const result = await this.#http(
         "GET",
