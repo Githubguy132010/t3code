@@ -1,3 +1,4 @@
+import { CloudTaskSettings } from "./CloudTaskSettings";
 import { CloudExecutionSettings } from "./CloudExecutionSettings";
 import {
   ChevronsLeftRightEllipsisIcon,
@@ -3285,7 +3286,10 @@ export function ConnectionsSettings() {
     <>
       {primaryEnvironmentId !== null &&
         primaryServerConfig?.environment.capabilities.cloudExecution === true && (
-          <CloudExecutionSettings key={primaryEnvironmentId} environmentId={primaryEnvironmentId} />
+          <div key={primaryEnvironmentId}>
+            <CloudExecutionSettings environmentId={primaryEnvironmentId} />
+            <CloudTaskSettings environmentId={primaryEnvironmentId} />
+          </div>
         )}
       {desktopBridge || canManageLocalBackend ? (
         <>

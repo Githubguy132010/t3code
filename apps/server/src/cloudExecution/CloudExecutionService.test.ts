@@ -4,7 +4,7 @@ import * as Fiber from "effect/Fiber";
 import * as Effect from "effect/Effect";
 import { CloudExecutionService, layer } from "./CloudExecutionService.ts";
 import { requiredScopeForRpcMethod } from "../auth/RpcAuthorization.ts";
-import { AuthRelayWriteScope, WS_METHODS } from "@t3tools/contracts";
+import { AuthRelayWriteScope, WS_METHODS, ProviderInstanceId } from "@t3tools/contracts";
 afterEach(() => vi.unstubAllGlobals());
 it("requires relay-write authorization for cloud control", () => {
   expect(requiredScopeForRpcMethod(WS_METHODS.cloudExecutionCommand)).toBe(AuthRelayWriteScope);
@@ -94,3 +94,18 @@ it.effect("does not release ownership when a duplicate attachment is rejected", 
     expect(vi.mocked(fetch)).toHaveBeenCalledTimes(1);
   }).pipe(Effect.provide(layer));
 });
+
+it.effect("task readiness is isolated and never calls a live provider", () => Effect.gen(function* () {
+  vi.stubGlobal("fetch", vi.fn(() => { throw new Error("Must not access provider"); }));
+  const service = yield* CloudExecutionService;
+  const result = yield* service.execute("owner-a", { action: "task-submit", spec: {
+    repository: "owner/repo", baseSha: "a".repeat(40), providerInstanceId: ProviderInstanceId.make("codex"), instruction: "Fix a test", requiredChecks: ["unit"],
+  } });
+  expect(result.task?.stage).toBe("blocked");
+  const denied = yield* Effect.result(service.execute("owner-b", { action: "task-status" }));
+  expect(denied._tag).toBe("Failure");
+  expect(vi.mocked(fetch)).not.toHaveBeenCalled();
+  yield* service.execute("owner-a", { action: "task-clear" });
+  const cleared = yield* service.execute("owner-b", { action: "task-status" });
+  expect(cleared.task).toBeUndefined();
+}).pipe(Effect.provide(layer)));

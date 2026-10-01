@@ -1,5 +1,8 @@
+import { CloudTaskSpec, CloudTaskSnapshot } from "./cloudTask.ts";
 import * as Schema from "effect/Schema";
 export const CloudExecutionCommand = Schema.Union([
+  Schema.Struct({ action: Schema.Literal("task-submit"), spec: CloudTaskSpec }),
+  Schema.Struct({ action: Schema.Literals(["task-status", "task-clear"]) }),
   Schema.Struct({
     action: Schema.Literal("attach"),
     boxId: Schema.String.check(Schema.isPattern(/^[a-zA-Z0-9_-]{1,100}$/)),
@@ -28,6 +31,7 @@ export const CloudExecutionSnapshot = Schema.Struct({
   ]),
   deadline: Schema.NullOr(Schema.Number),
   pauseAttempts: Schema.Number,
+  task: Schema.optionalKey(CloudTaskSnapshot),
   export: Schema.optionalKey(
     Schema.Struct({ patch: Schema.String, sha256: Schema.String, bytes: Schema.Number }),
   ),
