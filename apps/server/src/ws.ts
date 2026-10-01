@@ -1,3 +1,4 @@
+import * as CloudExecution from "./cloudExecution/CloudExecutionService.ts";
 import {
   sameUsageLimitCommandCoverage,
   withUsageLimitsCommands,
@@ -634,6 +635,7 @@ const makeWsRpcLayer = (
       >();
       const agentSessionScanner = yield* AgentSessionScanner.AgentSessionScanner;
       const serverEnvironment = yield* ServerEnvironment.ServerEnvironment;
+      const cloudExecution = yield* CloudExecution.CloudExecutionService;
       const backgroundPolicy = yield* BackgroundPolicy.BackgroundPolicy;
       const rpcClientIds = yield* Ref.make(new Set<RpcClientId>());
       yield* Effect.addFinalizer(() =>
@@ -2707,6 +2709,11 @@ const makeWsRpcLayer = (
               ),
             ),
             { "rpc.aggregate": "provider" },
+          ),
+        [WS_METHODS.cloudExecutionCommand]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.cloudExecutionCommand,
+            cloudExecution.execute(currentSessionId, input),
           ),
         [WS_METHODS.serverUpdateProvider]: (input) =>
           observeRpcEffect(

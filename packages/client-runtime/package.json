@@ -302,6 +302,10 @@
     "./device/duo-control": {
       "types": "./src/device/duoControl.ts",
       "default": "./src/device/duoControl.ts"
+    },
+    "./state/cloudExecution": {
+      "types": "./src/state/cloudExecution.ts",
+      "default": "./src/state/cloudExecution.ts"
     }
   },
   "scripts": {

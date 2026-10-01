@@ -1,0 +1,57 @@
+name: Cloud pilot head validation
+
+on:
+  pull_request:
+    paths:
+      - 'apps/server/**'
+      - 'apps/web/**'
+      - 'packages/contracts/**'
+      - 'packages/client-runtime/**'
+      - '.github/workflows/cloud-pilot.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cloud-pilot-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    if: github.repository == 'Githubguy132010/t3code' && github.event.repository.private == false && github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+      - name: Verify exact head
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha }}
+        run: test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24.13.1'
+      - name: Install selected workspaces including lint plugin
+        run: |
+          npm install --global pnpm@11.10.0
+          pnpm install --frozen-lockfile --ignore-scripts --filter t3... --filter @t3tools/web... --filter @t3tools/client-runtime... --filter @t3tools/oxlint-plugin-t3code...
+          node_modules/.bin/effect-tsgo patch
+      - name: Targeted regression tests
+        run: |
+          (cd apps/server && ../../node_modules/.bin/vp test run src/cloudExecution/UpstashBoxAdapter.test.ts src/cloudExecution/CloudExecutionService.test.ts)
+          (cd packages/contracts && ../../node_modules/.bin/vp test run src/cloudExecution.test.ts)
+          (cd apps/web && ../../node_modules/.bin/vp test run src/components/settings/CloudExecutionSettings.test.tsx)
+      - name: Sequential measured typechecks
+        run: |
+          for project in packages/contracts packages/client-runtime apps/server apps/web; do
+            echo "TYPECHECK $project $(date -u +%FT%TZ)"
+            /usr/bin/time -v timeout --verbose --kill-after=5 120 node_modules/.bin/tsc --noEmit -p "$project/tsconfig.json"
+          done
+      - name: Focused lint and formatting
+        run: |
+          files=(apps/server/src/cloudExecution/*.ts apps/web/src/components/settings/CloudExecutionSettings*.tsx packages/contracts/src/cloudExecution*.ts packages/client-runtime/src/state/cloudExecution.ts)
+          node_modules/.bin/vp lint "${files[@]}"
+          node_modules/.bin/vp fmt "${files[@]}"
+          git diff --exit-code

@@ -1,4 +1,9 @@
 import {
+  CloudExecutionCommand,
+  CloudExecutionSnapshot,
+  CloudExecutionError,
+} from "./cloudExecution.ts";
+import {
   ChatGptReconnectProfileInput,
   ChatGptReconnectProfile,
   ChatGptImportProfileInput,
@@ -287,6 +292,7 @@ import {
 import { VcsError } from "./vcs.ts";
 
 export const WS_METHODS = {
+  cloudExecutionCommand: "cloudExecution.command",
   // Project registry methods
   projectsList: "projects.list",
   projectsAdd: "projects.add",
@@ -1449,7 +1455,14 @@ const WsSubscribeResourceTelemetryRpc = Rpc.make(WS_METHODS.subscribeResourceTel
   stream: true,
 });
 
+const WsCloudExecutionCommandRpc = Rpc.make(WS_METHODS.cloudExecutionCommand, {
+  payload: CloudExecutionCommand,
+  success: CloudExecutionSnapshot,
+  error: Schema.Union([CloudExecutionError, EnvironmentAuthorizationError]),
+});
+
 export const WsRpcGroup = RpcGroup.make(
+  WsCloudExecutionCommandRpc,
   WsServerProbeRpc,
   WsServerGetConfigRpc,
   WsServerRefreshProvidersRpc,

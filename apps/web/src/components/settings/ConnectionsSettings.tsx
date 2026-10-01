@@ -1,3 +1,4 @@
+import { CloudExecutionSettings } from "./CloudExecutionSettings";
 import {
   ChevronsLeftRightEllipsisIcon,
   EllipsisIcon,
@@ -3282,6 +3283,10 @@ export function ConnectionsSettings() {
 
   const primarySettings = (
     <>
+      {primaryEnvironmentId !== null &&
+        primaryServerConfig?.environment.capabilities.cloudExecution === true && (
+          <CloudExecutionSettings key={primaryEnvironmentId} environmentId={primaryEnvironmentId} />
+        )}
       {desktopBridge || canManageLocalBackend ? (
         <>
           <SettingsSection
