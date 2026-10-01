@@ -13,6 +13,7 @@ import {
   type ProviderServiceShape,
 } from "../provider/Services/ProviderService.ts";
 import { ProviderRegistry } from "../provider/Services/ProviderRegistry.ts";
+import { forkParked } from "../serverActivation.ts";
 import { CloudTaskError } from "./CloudTaskRunner.ts";
 
 export const PilotTurn = Schema.Struct({
@@ -26,7 +27,14 @@ export const PilotTurn = Schema.Struct({
 export type PilotTurn = typeof PilotTurn.Type;
 const PilotReceipt = Schema.Struct({
   id: Schema.String,
-  stage: Schema.Literals(["starting", "running", "completed", "failed", "approval-required", "interrupted"]),
+  stage: Schema.Literals([
+    "starting",
+    "running",
+    "completed",
+    "failed",
+    "approval-required",
+    "interrupted",
+  ]),
   cleanupConfirmed: Schema.Boolean,
 });
 export type PilotReceipt = typeof PilotReceipt.Type;
@@ -124,41 +132,41 @@ export const runPilotTurn = Effect.fnUntraced(function* (
 });
 
 export const layer = Layer.effectDiscard(
-  Effect.gen(function* () {
-    const enabled = yield* Config.String("T3_CLOUD_PILOT_ENABLED").pipe(Config.withDefault(""));
-    if (enabled !== "explicit-box-activation") return;
-    const fs = yield* FileSystem.FileSystem;
-    const provider = yield* ProviderService;
-    const registry = yield* ProviderRegistry;
-    const root = "/workspace/home/t3-pilot";
-    const job = yield* fs
-      .readFileString(`${root}/turn.json`)
-      .pipe(Effect.flatMap(decodeTurn));
-    const jobDir = `${root}/jobs/${job.id}`;
-    const receiptPath = `${jobDir}/turn-${job.attempt}.json`;
-    // Never replay an admitted job after a restart or an uncertain disconnect.
-    if (yield* fs.exists(receiptPath)) return;
-    const save = (receipt: PilotReceipt) =>
-      Effect.gen(function* () {
-        yield* fs.writeFileString(`${receiptPath}.tmp`, encodeReceipt(receipt));
-        yield* fs.rename(`${receiptPath}.tmp`, receiptPath);
-      }).pipe(
-        Effect.mapError(() => new CloudTaskError({ message: "Could not persist pilot receipt" })),
-      );
-    const snapshots = yield* registry.refreshInstance(job.spec.providerInstanceId);
-    const selected = snapshots.find((item) => item.instanceId === job.spec.providerInstanceId);
-    const now = yield* Clock.currentTimeMillis;
-    if (
-      job.deadline <= now ||
-      job.deadline > now + 1_200_000 ||
-      selected?.driver !== "codex" ||
-      !selected.enabled ||
-      !selected.installed ||
-      selected.auth.status !== "authenticated"
-    ) {
-      yield* save({ id: job.id, stage: "failed", cleanupConfirmed: true });
-      return;
-    }
-    yield* runPilotTurn(job, provider, save).pipe(Effect.forkScoped);
-  }),
+  forkParked(
+    Effect.gen(function* () {
+      const enabled = yield* Config.String("T3_CLOUD_PILOT_ENABLED").pipe(Config.withDefault(""));
+      if (enabled !== "explicit-box-activation") return;
+      const fs = yield* FileSystem.FileSystem;
+      const provider = yield* ProviderService;
+      const registry = yield* ProviderRegistry;
+      const root = "/workspace/home/t3-pilot";
+      const job = yield* fs.readFileString(`${root}/turn.json`).pipe(Effect.flatMap(decodeTurn));
+      const jobDir = `${root}/jobs/${job.id}`;
+      const receiptPath = `${jobDir}/turn-${job.attempt}.json`;
+      // Never replay an admitted job after a restart or an uncertain disconnect.
+      if (yield* fs.exists(receiptPath)) return;
+      const save = (receipt: PilotReceipt) =>
+        Effect.gen(function* () {
+          yield* fs.writeFileString(`${receiptPath}.tmp`, encodeReceipt(receipt));
+          yield* fs.rename(`${receiptPath}.tmp`, receiptPath);
+        }).pipe(
+          Effect.mapError(() => new CloudTaskError({ message: "Could not persist pilot receipt" })),
+        );
+      const snapshots = yield* registry.refreshInstance(job.spec.providerInstanceId);
+      const selected = snapshots.find((item) => item.instanceId === job.spec.providerInstanceId);
+      const now = yield* Clock.currentTimeMillis;
+      if (
+        job.deadline <= now ||
+        job.deadline > now + 1_200_000 ||
+        selected?.driver !== "codex" ||
+        !selected.enabled ||
+        !selected.installed ||
+        selected.auth.status !== "authenticated"
+      ) {
+        yield* save({ id: job.id, stage: "failed", cleanupConfirmed: true });
+        return;
+      }
+      yield* runPilotTurn(job, provider, save).pipe(Effect.forkScoped);
+    }),
+  ),
 );
