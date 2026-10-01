@@ -7,7 +7,8 @@ on:
       - 'apps/web/**'
       - 'packages/contracts/**'
       - 'packages/client-runtime/**'
-      - '.github/workflows/cloud-pilot.yml'
+      - '.github/workflows/cloud-pilot*.yml'
+      - 'scripts/cloud-pilot/**'
 
 permissions:
   contents: read
@@ -38,9 +39,11 @@ jobs:
           npm install --global pnpm@11.10.0
           pnpm install --frozen-lockfile --ignore-scripts --filter t3... --filter @t3tools/web... --filter @t3tools/client-runtime... --filter @t3tools/oxlint-plugin-t3code... --filter @t3tools/scripts...
           node_modules/.bin/effect-tsgo patch
+      - name: Controller regression tests
+        run: python3 -m unittest discover -s scripts/cloud-pilot -p test_controller.py
       - name: Targeted regression tests
         run: |
-          (cd apps/server && ../../node_modules/.bin/vp test run src/cloudExecution/UpstashBoxAdapter.test.ts src/cloudExecution/CloudExecutionService.test.ts src/cloudExecution/CloudTaskRunner.test.ts)
+          (cd apps/server && ../../node_modules/.bin/vp test run src/cloudExecution/UpstashBoxAdapter.test.ts src/cloudExecution/CloudExecutionService.test.ts src/cloudExecution/CloudTaskRunner.test.ts src/cloudExecution/CloudPilotWorker.test.ts)
           (cd packages/contracts && ../../node_modules/.bin/vp test run src/cloudExecution.test.ts)
           (cd apps/web && ../../node_modules/.bin/vp test run src/components/settings/CloudExecutionSettings.test.tsx src/components/settings/CloudTaskSettings.test.tsx)
       - name: Sequential measured typechecks
@@ -65,3 +68,5 @@ jobs:
         run: |
           (cd apps/web && ../../node_modules/.bin/vp build)
           (cd apps/server && ../../node_modules/.bin/vp pack)
+      - name: Package and smoke-test disposable runtime
+        run: bash scripts/cloud-pilot/package.sh

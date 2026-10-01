@@ -1,3 +1,4 @@
+import * as CloudPilotWorker from "./cloudExecution/CloudPilotWorker.ts";
 // @effect-diagnostics nodeBuiltinImport:off
 import * as NodeHttp from "node:http";
 
@@ -972,6 +973,7 @@ const makeServerLayer = Layer.unwrap(
       tailscaleServeLayer,
       cloudDesiredLinkReconcileLayer,
       HeapSnapshot.layer,
+      CloudPilotWorker.layer,
     );
 
     return serverApplicationLayer.pipe(
