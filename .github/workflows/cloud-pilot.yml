@@ -65,8 +65,11 @@ jobs:
           node_modules/.bin/vp fmt "${files[@]}"
           git diff --exit-code
       - name: Production web and server bundle build
+        id: production
+        if: success() || failure()
         run: |
           (cd apps/web && ../../node_modules/.bin/vp build)
           (cd apps/server && ../../node_modules/.bin/vp pack)
       - name: Package and smoke-test disposable runtime
+        if: (success() || failure()) && steps.production.outcome == 'success'
         run: bash scripts/cloud-pilot/package.sh

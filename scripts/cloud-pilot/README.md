@@ -7,10 +7,10 @@ only after that PR merges and Thomas asks again.
 
 ## Current state
 
-The published PR head still contains readiness/mock orchestration. These local
-production-path additions have not been published or typechecked: automatic
-approval review blocked publication of dormant live workflows. Python controller
-unit tests pass; this is not a live acceptance result or a portability claim.
+The disabled production-path prototype is published on draft PR #2 after explicit
+user approval. Live workflows have literal `false` gates and cannot run even when
+secrets or repository variables exist. Secret-free CI validates this code; no live
+Box execution, remote login, credential change or iPhone installation is implied.
 
 The prototype runs a separate T3 server, using its existing authenticated Codex
 provider, inside the existing dedicated Box. The Mac performs no build or agent
