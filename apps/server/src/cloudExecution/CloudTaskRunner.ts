@@ -8,7 +8,9 @@ import type {
 } from "@t3tools/contracts";
 import { ThreadId } from "@t3tools/contracts";
 
-export class CloudTaskError extends Data.TaggedError("CloudTaskError")<{ readonly message: string }> {}
+export class CloudTaskError extends Data.TaggedError("CloudTaskError")<{
+  readonly message: string;
+}> {}
 
 export interface CloudTaskAdapters {
   readonly preflight: (
@@ -23,9 +25,7 @@ export interface CloudTaskAdapters {
   ) => Effect.Effect<void, CloudTaskError>;
   readonly commit: () => Effect.Effect<string, CloudTaskError>;
   readonly push: (branch: string, sha: string) => Effect.Effect<string, CloudTaskError>;
-  readonly ci: (
-    sha: string,
-  ) => Effect.Effect<
+  readonly ci: (sha: string) => Effect.Effect<
     {
       readonly sha: string;
       readonly checks: readonly { readonly name: string; readonly conclusion: string }[];
@@ -36,7 +36,8 @@ export interface CloudTaskAdapters {
   readonly cleanup: () => Effect.Effect<void, CloudTaskError>;
 }
 
-const unavailable = () => Effect.fail(new CloudTaskError({ message: "Cloud execution is not configured" }));
+const unavailable = () =>
+  Effect.fail(new CloudTaskError({ message: "Cloud execution is not configured" }));
 export const unavailableCloudTaskAdapters: CloudTaskAdapters = {
   preflight: () =>
     Effect.succeed([
@@ -117,7 +118,8 @@ export const runCloudTask = Effect.fnUntraced(function* (
         return yield* Effect.fail(new CloudTaskError({ message: "Push receipt mismatch" }));
       state = { ...state, stage: "ci" };
       const result = yield* adapters.ci(sha);
-      if (result.sha !== sha) return yield* Effect.fail(new CloudTaskError({ message: "CI receipt mismatch" }));
+      if (result.sha !== sha)
+        return yield* Effect.fail(new CloudTaskError({ message: "CI receipt mismatch" }));
       if (
         spec.requiredChecks.every((name) => {
           const matching = result.checks.filter((check) => check.name === name);

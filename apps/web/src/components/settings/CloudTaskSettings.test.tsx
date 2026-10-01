@@ -49,22 +49,43 @@ it("rejects incomplete task input before any RPC", () => {
   expect(visitElements(render(), (e) => e.props.role === "alert")).toBeTruthy();
 });
 it("submits selected repository and task and displays fail-closed readiness", async () => {
-  request.mockResolvedValue({ _tag: "Success", value: { task: {
-    repository: "owner/repo", branch: "t3-cloud/test", stage: "blocked", attempt: 0,
-    sha: null, blockers: ["Remote authorization required"], cleanupConfirmed: false,
-  } } });
+  request.mockResolvedValue({
+    _tag: "Success",
+    value: {
+      task: {
+        repository: "owner/repo",
+        branch: "t3-cloud/test",
+        stage: "blocked",
+        attempt: 0,
+        sha: null,
+        blockers: ["Remote authorization required"],
+        cleanupConfirmed: false,
+      },
+    },
+  });
   for (const [label, value] of [
-    ["GitHub repository", "owner/repo"], ["Starting commit SHA", "a".repeat(40)],
-    ["Provider instance ID", "codex"], ["Cloud task instruction", "Fix the test"],
+    ["GitHub repository", "owner/repo"],
+    ["Starting commit SHA", "a".repeat(40)],
+    ["Provider instance ID", "codex"],
+    ["Cloud task instruction", "Fix the test"],
     ["Required CI checks", "unit, build"],
-  ] as const) field(render(), label).onChange({ target: { value } });
+  ] as const)
+    field(render(), label).onChange({ target: { value } });
   control(render(), "Check task readiness").onClick();
-  expect(request.mock.calls[0]?.[0].input).toEqual({ action: "task-submit", spec: {
-    repository: "owner/repo", baseSha: "a".repeat(40), providerInstanceId: "codex",
-    instruction: "Fix the test", requiredChecks: ["unit", "build"],
-  } });
+  expect(request.mock.calls[0]?.[0].input).toEqual({
+    action: "task-submit",
+    spec: {
+      repository: "owner/repo",
+      baseSha: "a".repeat(40),
+      providerInstanceId: "codex",
+      instruction: "Fix the test",
+      requiredChecks: ["unit", "build"],
+    },
+  });
   await request.mock.results[0]!.value;
   await Promise.resolve();
-  expect(visitElements(render(), (e) => e.props.children === "Remote authorization required")).toBeTruthy();
+  expect(
+    visitElements(render(), (e) => e.props.children === "Remote authorization required"),
+  ).toBeTruthy();
   expect(control(render(), "Clear task").disabled).toBe(false);
 });
