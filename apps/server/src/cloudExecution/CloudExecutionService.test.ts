@@ -95,17 +95,31 @@ it.effect("does not release ownership when a duplicate attachment is rejected", 
   }).pipe(Effect.provide(layer));
 });
 
-it.effect("task readiness is isolated and never calls a live provider", () => Effect.gen(function* () {
-  vi.stubGlobal("fetch", vi.fn(() => { throw new Error("Must not access provider"); }));
-  const service = yield* CloudExecutionService;
-  const result = yield* service.execute("owner-a", { action: "task-submit", spec: {
-    repository: "owner/repo", baseSha: "a".repeat(40), providerInstanceId: ProviderInstanceId.make("codex"), instruction: "Fix a test", requiredChecks: ["unit"],
-  } });
-  expect(result.task?.stage).toBe("blocked");
-  const denied = yield* Effect.result(service.execute("owner-b", { action: "task-status" }));
-  expect(denied._tag).toBe("Failure");
-  expect(vi.mocked(fetch)).not.toHaveBeenCalled();
-  yield* service.execute("owner-a", { action: "task-clear" });
-  const cleared = yield* service.execute("owner-b", { action: "task-status" });
-  expect(cleared.task).toBeUndefined();
-}).pipe(Effect.provide(layer)));
+it.effect("task readiness is isolated and never calls a live provider", () =>
+  Effect.gen(function* () {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(() => {
+        throw new Error("Must not access provider");
+      }),
+    );
+    const service = yield* CloudExecutionService;
+    const result = yield* service.execute("owner-a", {
+      action: "task-submit",
+      spec: {
+        repository: "owner/repo",
+        baseSha: "a".repeat(40),
+        providerInstanceId: ProviderInstanceId.make("codex"),
+        instruction: "Fix a test",
+        requiredChecks: ["unit"],
+      },
+    });
+    expect(result.task?.stage).toBe("blocked");
+    const denied = yield* Effect.result(service.execute("owner-b", { action: "task-status" }));
+    expect(denied._tag).toBe("Failure");
+    expect(vi.mocked(fetch)).not.toHaveBeenCalled();
+    yield* service.execute("owner-a", { action: "task-clear" });
+    const cleared = yield* service.execute("owner-b", { action: "task-status" });
+    expect(cleared.task).toBeUndefined();
+  }).pipe(Effect.provide(layer)),
+);

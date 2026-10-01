@@ -42,7 +42,7 @@ jobs:
         run: |
           (cd apps/server && ../../node_modules/.bin/vp test run src/cloudExecution/UpstashBoxAdapter.test.ts src/cloudExecution/CloudExecutionService.test.ts src/cloudExecution/CloudTaskRunner.test.ts)
           (cd packages/contracts && ../../node_modules/.bin/vp test run src/cloudExecution.test.ts)
-          (cd apps/web && ../../node_modules/.bin/vp test run src/components/settings/CloudExecutionSettings.test.tsx)
+          (cd apps/web && ../../node_modules/.bin/vp test run src/components/settings/CloudExecutionSettings.test.tsx src/components/settings/CloudTaskSettings.test.tsx)
       - name: Sequential measured typechecks
         if: success() || failure()
         run: |

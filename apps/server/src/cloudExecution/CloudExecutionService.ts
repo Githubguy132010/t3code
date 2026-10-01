@@ -31,14 +31,31 @@ export const layer = Layer.effect(
     return CloudExecutionService.of({
       execute: Effect.fnUntraced(function* (sessionId: string, command: CloudExecutionCommand) {
         if (owner !== undefined && owner !== sessionId)
-          return yield* Effect.fail(new CloudExecutionError({ message: "Cloud session belongs to another client." }));
-        if (command.action === "task-submit" || command.action === "task-status" || command.action === "task-clear") {
-          if (taskBusy) return yield* Effect.fail(new CloudExecutionError({ message: "Task readiness check is already running." }));
+          return yield* Effect.fail(
+            new CloudExecutionError({ message: "Cloud session belongs to another client." }),
+          );
+        if (
+          command.action === "task-submit" ||
+          command.action === "task-status" ||
+          command.action === "task-clear"
+        ) {
+          if (taskBusy)
+            return yield* Effect.fail(
+              new CloudExecutionError({ message: "Task readiness check is already running." }),
+            );
           if (command.action === "task-submit") {
             owner = sessionId;
             taskBusy = true;
-            task = yield* runCloudTask(command.spec, NodeCrypto.randomUUID(), unavailableCloudTaskAdapters).pipe(
-              Effect.ensuring(Effect.sync(() => { taskBusy = false; })),
+            task = yield* runCloudTask(
+              command.spec,
+              NodeCrypto.randomUUID(),
+              unavailableCloudTaskAdapters,
+            ).pipe(
+              Effect.ensuring(
+                Effect.sync(() => {
+                  taskBusy = false;
+                }),
+              ),
             );
           } else if (command.action === "task-clear") {
             task = undefined;
@@ -63,7 +80,12 @@ export const layer = Layer.effect(
             try {
               return await session.execute(command);
             } catch (error) {
-              if (command.action === "attach" && session.snapshot().phase === "unconfigured" && !task)
+              if (
+                command.action === "attach" &&
+                session.snapshot().phase === "unconfigured" &&
+                !task &&
+                !taskBusy
+              )
                 owner = undefined;
               throw error;
             } finally {
