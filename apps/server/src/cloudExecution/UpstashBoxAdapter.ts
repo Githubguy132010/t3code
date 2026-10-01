@@ -1,3 +1,5 @@
+// @effect-diagnostics globalTimers:off
+// This Promise-based provider boundary owns an unref-able Node timer and AbortSignal cleanup; the Effect service scopes disposal.
 import * as NodeTimers from "node:timers";
 import * as NodeCrypto from "node:crypto";
 import type { CloudExecutionCommand, CloudExecutionSnapshot } from "@t3tools/contracts";

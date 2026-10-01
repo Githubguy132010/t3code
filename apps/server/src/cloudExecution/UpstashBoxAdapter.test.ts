@@ -1,3 +1,5 @@
+// @effect-diagnostics globalTimers:off
+// The native timer boundary is deliberately bridged to fake timers to verify real deadline admission and cleanup behavior.
 vi.mock("node:timers", () => ({
   setTimeout: (...args: Parameters<typeof setTimeout>) => setTimeout(...args),
   clearTimeout: (...args: Parameters<typeof clearTimeout>) => clearTimeout(...args),
