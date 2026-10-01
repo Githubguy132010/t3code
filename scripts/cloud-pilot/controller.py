@@ -12,6 +12,7 @@ import os
 from pathlib import Path
 import re
 import shlex
+import signal
 import sys
 import time
 import urllib.error
@@ -76,6 +77,7 @@ def request(url, token, method="GET", body=None, box=False, timeout=20):
             raise PilotError("Remote request failed or outcome unconfirmed")
         return result[0]
     finally:
+        abort()
         timer.cancel()
 
 
@@ -116,8 +118,12 @@ class Box:
         if not re.fullmatch(r"[a-zA-Z0-9_-]{1,100}", box_id) or not key:
             raise PilotError("Box credentials absent")
         self.url, self.key, self.transport = BASE + box_id, key, transport
+        self.work_deadline = None
+        self.closed = False
 
     def api(self, path, method="GET", body=None, timeout=20):
+        if path not in ("/status", "/pause") and (self.closed or (self.work_deadline is not None and time.time() + timeout + 5 >= self.work_deadline)):
+            raise PilotError("Remote work admission closed before independent pause")
         return self.transport(self.url + path, self.key, method, body, box=True, timeout=timeout)
 
     def command(self, command, seconds=30):
@@ -135,6 +141,7 @@ class Box:
         return json.loads(data["content"])
 
     def pause(self):
+        self.closed = True
         for _ in range(3):
             try:
                 if self.api("/status", timeout=10).get("status") != "paused":
@@ -178,7 +185,14 @@ def watchdog(box, deadline, owner, run_id):
     # Separate workflow run: cancelling the controller cannot cancel this watchdog.
     try:
         while time.time() < deadline - 150:
-            state = owner.api(f"/actions/runs/{run_id}")
+            try:
+                state = owner.api(f"/actions/runs/{run_id}")
+            except PilotError:
+                # Avoid an early asynchronous pause racing admitted controller work.
+                # The controller closes work admission before this fixed pause point.
+                while time.time() < deadline - 150:
+                    time.sleep(min(15, deadline - 150 - time.time()))
+                break
             if state.get("status") == "completed":
                 break
             time.sleep(15)
@@ -189,6 +203,35 @@ def watchdog(box, deadline, owner, run_id):
             raise PilotError("Cleanup unconfirmed; manually pause the selected Box")
 
 
+def stop_server(box, directory):
+    if box.api("/status", timeout=10).get("status") == "paused":
+        return False
+    script = """const fs = require('node:fs');
+const directory = process.argv[1];
+const job = directory.split('/').at(-1);
+if (!/^[a-f0-9]{32}$/.test(job)) process.exit(1);
+let pid; try { pid = Number(fs.readFileSync(directory + '/server.pid', 'utf8')); }
+catch (e) { if (e.code === 'ENOENT') process.exit(0); throw e; }
+if (!Number.isSafeInteger(pid) || pid < 2) process.exit(1);
+const proc = '/proc/' + pid;
+if (!fs.existsSync(proc)) process.exit(0);
+const expected = ['timeout', '--signal=TERM', '--kill-after=5', '650', 'node',
+  '/workspace/home/t3-pilot/runtime/dist/bin.mjs', 'serve', '--host', '127.0.0.1',
+  '--port', '3773', '--base-dir', '/workspace/home/t3-pilot/t3-home'];
+const command = fs.readFileSync(proc + '/cmdline', 'utf8').split('\\0').filter(Boolean);
+const env = fs.readFileSync(proc + '/environ', 'utf8').split('\\0');
+if (JSON.stringify(command) !== JSON.stringify(expected) || !env.includes('T3_PILOT_JOB_ID=' + job)) process.exit(1);
+process.kill(pid, 'SIGTERM');
+for (let i = 0; i < 50; i++) {
+  if (!fs.existsSync(proc)) process.exit(0);
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 100);
+}
+process.exit(1);
+"""
+    box.command("node -e " + shlex.quote(script) + " " + shlex.quote(directory), 8)
+    return True
+
+
 def execute(box, spec, control, target, run_id, runtime_mode, artifact_url, artifact_sha):
     if target.api("").get("private") is not False:
         raise PilotError("This prototype accepts only an approved public repository")
@@ -197,6 +240,7 @@ def execute(box, spec, control, target, run_id, runtime_mode, artifact_url, arti
     branch = "t3-cloud/" + job_id
     directory = ROOT + "/jobs/" + job_id
     deadline = int(time.time()) + 1800
+    box.work_deadline = deadline - 300
     state = {"id": job_id, "stage": "preflight", "branch": branch, "sha": None, "cleanupConfirmed": False}
     receipt(state)
     if box.api("/status").get("status") != "paused":
@@ -231,7 +275,7 @@ def execute(box, spec, control, target, run_id, runtime_mode, artifact_url, arti
             instruction = spec["instruction"] if attempt == 1 else spec["instruction"] + "\nFix the required CI checks for the last commit; keep this task scope. Required checks: " + ", ".join(spec["requiredChecks"])
             turn = {"id": job_id, "spec": {**spec, "instruction": instruction}, "attempt": attempt, "deadline": min(deadline - 180, int(time.time()) + 600) * 1000, "runtimeMode": runtime_mode}
             box.write(ROOT + "/turn.json", json.dumps(turn))
-            box.command(f"T3_CLOUD_PILOT_ENABLED=explicit-box-activation nohup timeout --signal=TERM --kill-after=5 650 node {ROOT}/runtime/dist/bin.mjs serve --host 127.0.0.1 --port 3773 --base-dir {ROOT}/t3-home >/dev/null 2>&1 & echo $! > {q(directory)}/server.pid")
+            box.command(f"T3_PILOT_JOB_ID={job_id} T3_CLOUD_PILOT_ENABLED=explicit-box-activation nohup timeout --signal=TERM --kill-after=5 650 node {ROOT}/runtime/dist/bin.mjs serve --host 127.0.0.1 --port 3773 --base-dir {ROOT}/t3-home >/dev/null 2>&1 & echo $! > {q(directory)}/server.pid")
             state.update(stage="agent", attempt=attempt); receipt(state)
             result = None
             for _ in range(130):
@@ -242,7 +286,7 @@ def execute(box, spec, control, target, run_id, runtime_mode, artifact_url, arti
                     continue
                 if result.get("stage") not in ("starting", "running"):
                     break
-            box.command(f"pid=$(cat {q(directory)}/server.pid); case $pid in ''|*[!0-9]*) exit 1;; esac; kill -TERM $pid 2>/dev/null || true")
+            stop_server(box, directory)
             if not result or result.get("id") != job_id or result.get("stage") != "completed" or result.get("cleanupConfirmed") is not True:
                 raise PilotError("Agent did not complete or cleanup is unconfirmed")
             # Reject task-authored workflows; prototype may only modify application files.
@@ -272,6 +316,10 @@ def execute(box, spec, control, target, run_id, runtime_mode, artifact_url, arti
                 time.sleep(10)
         raise PilotError("Two attempts exhausted")
     finally:
+        try:
+            state["cancellationConfirmed"] = stop_server(box, directory)
+        except PilotError:
+            state["cancellationConfirmed"] = False
         state["cleanupConfirmed"] = box.pause()
         if state["stage"] != "succeeded": state["stage"] = "failed"
         receipt(state)
@@ -311,6 +359,13 @@ def artifact_url(control):
 def main():
     if os.environ.get("T3_PILOT_ACTIVATION") != "APPROVED_ZERO_EXTRA_30_MIN":
         raise PilotError("Live activation absent")
+    def cancelled(signum, frame):
+        signal.signal(signal.SIGTERM, signal.SIG_IGN)
+        signal.signal(signal.SIGINT, signal.SIG_IGN)
+        raise PilotError("Controller cancellation requested")
+    if sys.argv[1:] != ["watchdog"]:
+        signal.signal(signal.SIGTERM, cancelled)
+        signal.signal(signal.SIGINT, cancelled)
     box = Box(os.environ["T3_PILOT_BOX_ID"], os.environ["T3_PILOT_BOX_API_KEY"])
     control = GitHub(os.environ["GITHUB_REPOSITORY"], os.environ["GH_TOKEN"])
     if sys.argv[1:] == ["watchdog-ready"]:

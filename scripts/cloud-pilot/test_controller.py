@@ -84,11 +84,47 @@ class ControllerTests(unittest.TestCase):
             def api(self, path): raise pilot.PilotError("GitHub unavailable")
         from unittest.mock import Mock
         box = Mock(); box.pause.return_value = True
-        with patch.object(pilot, "receipt") as save:
-            with self.assertRaises(pilot.PilotError):
-                pilot.watchdog(box, pilot.time.time() + 1800, Owner(), 42)
+        with patch.object(pilot, "receipt") as save, patch.object(pilot.time, "time", side_effect=[0, 1651, 1651]), patch.object(pilot.time, "sleep"):
+            pilot.watchdog(box, 1800, Owner(), 42)
             box.pause.assert_called_once()
+            box.command.assert_not_called()
             self.assertTrue(save.call_args.args[0]["cleanupConfirmed"])
+
+    def test_interrupted_wait_prevents_delayed_network_mutation(self):
+        from unittest.mock import Mock
+        done, expired = Mock(), threading.Event()
+        done.wait.side_effect = pilot.PilotError("cancelled")
+        connection = Mock(sock=None)
+        worker = Mock()
+        with patch.object(pilot.threading, "Event", side_effect=[done, expired]), patch.object(pilot.threading, "Thread", return_value=worker) as thread, patch.object(pilot.threading, "Timer"), patch.object(pilot.http.client, "HTTPSConnection", return_value=connection):
+            with self.assertRaises(pilot.PilotError): pilot.request("https://example.test/exec", "synthetic", method="POST")
+            self.assertTrue(expired.is_set())
+            thread.call_args.kwargs["target"]()
+            connection.request.assert_not_called()
+
+    def test_work_admission_closes_before_watchdog_pause(self):
+        from unittest.mock import Mock
+        transport = Mock()
+        box = pilot.Box("selected-box", "synthetic", transport)
+        box.work_deadline = 1500
+        with patch.object(pilot.time, "time", return_value=1470):
+            with self.assertRaises(pilot.PilotError): box.command("true", 30)
+        transport.assert_not_called()
+
+    def test_pause_permanently_closes_local_work_admission(self):
+        from unittest.mock import Mock
+        transport = Mock(return_value={"status": "paused"})
+        box = pilot.Box("selected-box", "synthetic", transport)
+        self.assertTrue(box.pause())
+        transport.reset_mock()
+        with self.assertRaises(pilot.PilotError): box.command("true")
+        transport.assert_not_called()
+
+    def test_cancellation_never_executes_on_paused_box(self):
+        from unittest.mock import Mock
+        box = Mock(); box.api.return_value = {"status": "paused"}
+        self.assertFalse(pilot.stop_server(box, pilot.ROOT + "/jobs/" + "a" * 32))
+        box.command.assert_not_called()
 
     def test_committed_workflow_change_is_rejected_before_push(self):
         commands = []

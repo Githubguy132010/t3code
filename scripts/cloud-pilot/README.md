@@ -90,6 +90,15 @@ use 10-second total deadlines per HTTP operation. DNS delay and response trickli
 are bounded for controller/watchdog API calls. Provider turn completion comes from
 T3 events, not merely acknowledgement of `sendTurn()`.
 
+Remote work admission closes at minute 25, including enough time for each admitted
+HTTP request to finish before that point. The controller attempts graceful server
+cancellation with exact process arguments and its unique task identifier, then
+pauses. The watchdog only pauses; it never executes a command that could wake a
+paused Box. If GitHub monitoring fails, it waits for its fixed pause point.
+Interrupted HTTP requests are expired before cleanup. Forced process termination
+can still leave provider cancellation unconfirmed: pause is a compute receipt,
+not proof that an agent exited. Do not automatically resume an uncertain task.
+
 Worker receipts live under `/workspace/home/t3-pilot/jobs/<id>/turn-<attempt>.json`.
 Task and independently confirmed pause receipts are retained as Actions artifacts.
 Reconnect/read these receipts after a client disconnect; do not rerun an ambiguous
