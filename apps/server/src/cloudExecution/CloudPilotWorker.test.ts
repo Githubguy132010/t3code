@@ -30,8 +30,14 @@ it.effect("setup reports authenticated readiness without starting an agent", () 
   Effect.gen(function* () {
     const now = yield* Clock.currentTimeMillis;
     const receipts: PilotReceipt[] = [];
-    const result = yield* runPilotSetup({ ...job, deadline: now + 480_000 }, Effect.succeed(true),
-      (value) => Effect.sync(() => { receipts.push(value); }));
+    const result = yield* runPilotSetup(
+      { ...job, deadline: now + 480_000 },
+      Effect.succeed(true),
+      (value) =>
+        Effect.sync(() => {
+          receipts.push(value);
+        }),
+    );
     expect(result.stage).toBe("setup-ready");
     expect(receipts.map((value) => value.stage)).toEqual(["setup-waiting", "setup-ready"]);
   }),
@@ -41,8 +47,14 @@ it.effect("expired setup never inspects or admits a provider", () =>
   Effect.gen(function* () {
     const now = yield* Clock.currentTimeMillis;
     let inspected = false;
-    const result = yield* runPilotSetup({ ...job, deadline: now - 1 },
-      Effect.sync(() => { inspected = true; return true; }), () => Effect.void);
+    const result = yield* runPilotSetup(
+      { ...job, deadline: now - 1 },
+      Effect.sync(() => {
+        inspected = true;
+        return true;
+      }),
+      () => Effect.void,
+    );
     expect(result.stage).toBe("failed");
     expect(inspected).toBe(false);
   }),

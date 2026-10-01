@@ -27,10 +27,10 @@ https://github.com/Githubguy132010/t3code/settings/secrets/actions/new :
 - `T3_PILOT_BOX_API_KEY`: existing Box API credential. It is supplied only to
   controller/watchdog processes, never to the agent, repository, or console output.
 - `T3_PILOT_REPO_TOKEN`: a fine-grained token restricted to the one approved test
-  repository, with Contents and Pull requests write; Checks and Commit statuses
-  read (plus GitHub's automatic Metadata read). No Actions or Workflows permission
-  is needed on this token. It pushes a task branch and opens a **draft** PR so PR-only CI can
-  run. It stays on the GitHub runner; Box exports a bounded Git bundle. No workflow
+  repository, with Contents write; Checks and Commit statuses read (plus GitHub's
+  automatic Metadata read). No Pull requests, Actions or Workflows permission is
+  needed. It pushes a task branch; the verified Magister workflow runs on push.
+  No new PR is created and PR1 is not changed. It stays on the GitHub runner; Box exports a bounded Git bundle. No workflow
   file changes from that bundle are permitted. No token is created by this code.
 
 The live workflow jobs also contain literal `false` gates. Removing these requires
@@ -105,7 +105,7 @@ it does not sign out or revoke OAuth. Revocation/removal is a separate explicit
 user action. GitHub/Box API credentials remain outside the agent process.
 
 One bundled **live** approval must specify: exact prototype SHA, existing Box,
-remote Codex login and allowance, selected public repository/base branch/base SHA,
+remote Codex login and allowance, selected public repository/base SHA,
 required check names, GitHub permissions above, selected approval mode, **$0 extra**
 spend, freshly checked free compute/artifact-storage allowance, and one 30-minute
 window. No paid API key, pay-as-you-go upgrade or new resource is implied. If the
@@ -114,19 +114,20 @@ Node >=24.10. The eight-minute setup check must confirm remote login before task
 For the documented Free small Box (two cores), reserve at least one remaining CPU
 hour for a 30-minute window. The plan's five monthly CPU hours and built-in agent
 token allowance do not fund external Codex usage; verify ChatGPT allowance too.
-No target-repository token is created by this code. Pull requests write is needed
-because the accepted task uses a new branch, not the branch already attached to PR1.
+No target-repository token is created by this code. Only use a target repository
+whose required CI runs on branch push; this pilot does not create PRs.
 
 The later Magister task must use a separate task branch from draft PR1 at
-`865bb2c417651b4b448af50d13109404cf7bfda4`, with its actual base branch and CI names
-resolved immediately before activation. Preserve text, lesson identity, completed
+`865bb2c417651b4b448af50d13109404cf7bfda4`, with required check `test` (verified from `.github/workflows/test.yml`, which runs
+on push and pull_request). PR1 has since advanced to `e2b94b871f72a63f6ce92b794d21c95e9856534a`;
+retain the explicitly approved older base unless Thomas changes it. Preserve text, lesson identity, completed
 status and tenant/student scope in JSON backup/export/restore. No Magister changes
 have been made while preparing this prototype.
 
 ## Execution and evidence
 
 Dispatch `windows-tests.yml` on the exact approved branch/head. Supply JSON
-`repository`, `baseBranch`, `baseSha`, `providerInstanceId`, `instruction`, and unique
+`repository`, `baseSha`, `providerInstanceId`, `instruction`, and unique
 `requiredChecks`; choose `approval-required` or explicitly approve
 `auto-accept-edits`. The worker stops with an `approval-required` receipt if it
 receives an interactive request; it never silently switches to full access.
@@ -159,6 +160,14 @@ This is bounded best-effort cleanup, not a provider-enforced hard TTL or dollar 
 The current web form remains readiness-only. The first real experiment is started
 through the explicit Actions dispatch, not through an unimplemented UI button.
 Native iPhone packaging and end-to-end paired-client acceptance are still separate.
+
+The complete approved-scope input is in `magister-task.example.json`. After the
+separate live approval, Thomas can choose Actions → Windows Tests → Run workflow,
+select `feature/upstash-cloud-pilot`, paste that JSON into `spec`, select
+`APPROVED_ZERO_EXTRA_30_MIN` and `approval-required`. The branch version is named
+Disposable cloud pilot execution. An agent approval request ends the attempt with
+a receipt instead of silently enabling unrestricted access. Do not dispatch while
+the literal false gates remain; they require a separately approved code change.
 
 Verified references:
 

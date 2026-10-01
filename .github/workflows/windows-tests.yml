@@ -12,7 +12,7 @@ on:
           - NOT_APPROVED
           - APPROVED_ZERO_EXTRA_30_MIN
       spec:
-        description: JSON repository, baseBranch, baseSha, providerInstanceId, instruction, requiredChecks
+        description: JSON repository, baseSha, providerInstanceId, instruction, requiredChecks
         required: true
         type: string
       runtime_mode:

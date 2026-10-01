@@ -1,0 +1,9 @@
+{
+  "repository": "Githubguy132010/persoonlijke-magister-addons",
+  "baseSha": "865bb2c417651b4b448af50d13109404cf7bfda4",
+  "providerInstanceId": "codex",
+  "instruction": "Add lesson-linked custom homework tasks to the existing JSON backup/export/restore flow. Preserve each task's text, lesson identity, completed status, and tenant/student scope. Add meaningful round-trip regression tests, including separation between two tenants/students. Preserve existing behavior for other homework data. Run npm test and npm run package. Do not modify .github workflows or merge anything. Work only on the separate task branch created from the pinned base SHA; do not update PR1's branch.",
+  "requiredChecks": [
+    "test"
+  ]
+}

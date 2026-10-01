@@ -65,11 +65,17 @@ export const runPilotSetup = Effect.fnUntraced(function* (
     receipt = { ...receipt, stage: "setup-ready" };
   }).pipe(
     Effect.timeout(job.deadline - now),
-    Effect.catch(() => Effect.sync(() => { receipt = { ...receipt, stage: "failed" }; })),
-    Effect.ensuring(Effect.gen(function* () {
-      if (receipt.stage === "setup-waiting") receipt = { ...receipt, stage: "interrupted" };
-      yield* save(receipt).pipe(Effect.orDie);
-    })),
+    Effect.catch(() =>
+      Effect.sync(() => {
+        receipt = { ...receipt, stage: "failed" };
+      }),
+    ),
+    Effect.ensuring(
+      Effect.gen(function* () {
+        if (receipt.stage === "setup-waiting") receipt = { ...receipt, stage: "interrupted" };
+        yield* save(receipt).pipe(Effect.orDie);
+      }),
+    ),
   );
   return receipt;
 });
@@ -171,9 +177,10 @@ export const layer = Layer.effectDiscard(
       const root = "/workspace/home/t3-pilot";
       const job = yield* fs.readFileString(`${root}/turn.json`).pipe(Effect.flatMap(decodeTurn));
       const jobDir = `${root}/jobs/${job.id}`;
-      const receiptPath = enabled === "explicit-box-setup"
-        ? `${jobDir}/setup.json`
-        : `${jobDir}/turn-${job.attempt}.json`;
+      const receiptPath =
+        enabled === "explicit-box-setup"
+          ? `${jobDir}/setup.json`
+          : `${jobDir}/turn-${job.attempt}.json`;
       // Never replay an admitted job after a restart or an uncertain disconnect.
       if (yield* fs.exists(receiptPath)) return;
       const save = (receipt: PilotReceipt) =>
@@ -185,10 +192,19 @@ export const layer = Layer.effectDiscard(
         );
       if (enabled === "explicit-box-setup") {
         const ready = registry.refreshInstance(job.spec.providerInstanceId).pipe(
-          Effect.map((snapshots) => snapshots.some((item) =>
-            item.instanceId === job.spec.providerInstanceId && item.driver === "codex" &&
-            item.enabled && item.installed && item.auth.status === "authenticated")),
-          Effect.mapError(() => new CloudTaskError({ message: "Could not check remote provider setup" })),
+          Effect.map((snapshots) =>
+            snapshots.some(
+              (item) =>
+                item.instanceId === job.spec.providerInstanceId &&
+                item.driver === "codex" &&
+                item.enabled &&
+                item.installed &&
+                item.auth.status === "authenticated",
+            ),
+          ),
+          Effect.mapError(
+            () => new CloudTaskError({ message: "Could not check remote provider setup" }),
+          ),
         );
         yield* runPilotSetup(job, ready, save);
         return;

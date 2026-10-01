@@ -92,8 +92,6 @@ def validate(spec):
     checks = spec.get("requiredChecks")
     if not isinstance(checks, list) or not 0 < len(checks) <= 10 or any(not isinstance(c, str) or not 0 < len(c) <= 100 for c in checks) or len(set(checks)) != len(checks):
         raise PilotError("Unique required CI checks required")
-    if not isinstance(spec.get("baseBranch"), str) or not re.fullmatch(r"[A-Za-z0-9_./-]{1,200}", spec["baseBranch"]):
-        raise PilotError("Base branch required for draft CI pull request")
     return spec
 
 
@@ -267,7 +265,6 @@ def execute(box, spec, control, target, run_id, runtime_mode, artifact_url, arti
     if target.api("").get("private") is not False:
         raise PilotError("This prototype accepts only an approved public repository")
     job_id = uuid.uuid4().hex
-    draft_pr = None
     branch = "t3-cloud/" + job_id
     directory = ROOT + "/jobs/" + job_id
     deadline = int(time.time()) + 1800
@@ -295,8 +292,9 @@ def execute(box, spec, control, target, run_id, runtime_mode, artifact_url, arti
             raise PilotError("Resume unconfirmed")
         state["stage"] = "preparing"; receipt(state)
         q = shlex.quote
+        node_check = q("const [major, minor] = process.versions.node.split('.').map(Number); if (major < 24 || (major === 24 && minor < 10)) process.exit(42)")
         # The URL is a short-lived signed artifact URL, never a GitHub bearer token.
-        box.command(f"umask 077; mkdir -p {q(directory)} {ROOT}/runtime; curl --fail --silent --show-error --max-time 120 {q(artifact_url)} -o {q(directory)}/runtime.zip; unzip -q {q(directory)}/runtime.zip -d {q(directory)}/artifact; echo {q(artifact_sha + '  ' + directory + '/artifact/pilot-runtime.tgz')} | sha256sum -c - >/dev/null; tar -xzf {q(directory)}/artifact/pilot-runtime.tgz -C {ROOT}/runtime", 180)
+        box.command(f"node -e {node_check}; umask 077; mkdir -p {q(directory)} {ROOT}/runtime; curl --fail --silent --show-error --max-time 120 {q(artifact_url)} -o {q(directory)}/runtime.zip; unzip -q {q(directory)}/runtime.zip -d {q(directory)}/artifact; echo {q(artifact_sha + '  ' + directory + '/artifact/pilot-runtime.tgz')} | sha256sum -c - >/dev/null; tar -xzf {q(directory)}/artifact/pilot-runtime.tgz -C {ROOT}/runtime", 180)
         state["stage"] = "awaiting-user-setup"; receipt(state)
         setup_provider(box, spec, job_id, directory, deadline, runtime_mode)
         state["stage"] = "preparing-repository"; receipt(state)
@@ -339,9 +337,8 @@ def execute(box, spec, control, target, run_id, runtime_mode, artifact_url, arti
             remote = target.api("/git/ref/heads/" + branch)
             if remote["object"]["sha"] != sha:
                 raise PilotError("Push receipt mismatch")
-            if draft_pr is None:
-                draft_pr = target.api("/pulls", "POST", {"title": "Disposable T3 cloud task", "body": "Experimental cloud task; do not merge. Automated CI iteration is limited to two attempts.", "head": branch, "base": spec["baseBranch"], "draft": True})["number"]
-            state.update(stage="ci", sha=sha, pullRequest=draft_pr); receipt(state)
+            # The approved repository runs CI on push. Do not create a PR or request PR-write access.
+            state.update(stage="ci", sha=sha); receipt(state)
             for _ in range(40):
                 if time.time() >= deadline - 180:
                     raise PilotError("CI deadline reached")
