@@ -1,12 +1,13 @@
 import { expect, it } from "@effect/vitest";
 import * as Deferred from "effect/Deferred";
+import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as PubSub from "effect/PubSub";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import { ProviderSession, ProviderRuntimeEvent, ProviderTurnStartResult } from "@t3tools/contracts";
-import { PilotTurn, runPilotTurn, type PilotReceipt } from "./CloudPilotWorker.ts";
+import { PilotTurn, runPilotTurn, runPilotSetup, type PilotReceipt } from "./CloudPilotWorker.ts";
 const decodeJob = Schema.decodeSync(PilotTurn);
 const decodeSession = Schema.decodeSync(ProviderSession);
 const decodeEvent = Schema.decodeSync(ProviderRuntimeEvent);
@@ -24,6 +25,28 @@ const job = decodeJob({
     requiredChecks: ["unit"],
   },
 });
+
+it.effect("setup reports authenticated readiness without starting an agent", () =>
+  Effect.gen(function* () {
+    const now = yield* Clock.currentTimeMillis;
+    const receipts: PilotReceipt[] = [];
+    const result = yield* runPilotSetup({ ...job, deadline: now + 480_000 }, Effect.succeed(true),
+      (value) => Effect.sync(() => { receipts.push(value); }));
+    expect(result.stage).toBe("setup-ready");
+    expect(receipts.map((value) => value.stage)).toEqual(["setup-waiting", "setup-ready"]);
+  }),
+);
+
+it.effect("expired setup never inspects or admits a provider", () =>
+  Effect.gen(function* () {
+    const now = yield* Clock.currentTimeMillis;
+    let inspected = false;
+    const result = yield* runPilotSetup({ ...job, deadline: now - 1 },
+      Effect.sync(() => { inspected = true; return true; }), () => Effect.void);
+    expect(result.stage).toBe("failed");
+    expect(inspected).toBe(false);
+  }),
+);
 
 it.effect("awaits the real provider completion event and persists confirmed cleanup", () =>
   Effect.gen(function* () {

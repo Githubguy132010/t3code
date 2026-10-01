@@ -27,8 +27,9 @@ https://github.com/Githubguy132010/t3code/settings/secrets/actions/new :
 - `T3_PILOT_BOX_API_KEY`: existing Box API credential. It is supplied only to
   controller/watchdog processes, never to the agent, repository, or console output.
 - `T3_PILOT_REPO_TOKEN`: a fine-grained token restricted to the one approved test
-  repository, with Contents and Pull requests write; Actions, Checks and Commit
-  statuses read. It pushes a task branch and opens a **draft** PR so PR-only CI can
+  repository, with Contents and Pull requests write; Checks and Commit statuses
+  read (plus GitHub's automatic Metadata read). No Actions or Workflows permission
+  is needed on this token. It pushes a task branch and opens a **draft** PR so PR-only CI can
   run. It stays on the GitHub runner; Box exports a bounded Git bundle. No workflow
   file changes from that bundle are permitted. No token is created by this code.
 
@@ -47,26 +48,74 @@ Repository Actions variables, to be set only after the activation approval:
 permission solely to dispatch the separate watchdog. The target-repository token
 avoids relying on pushes by `GITHUB_TOKEN` to trigger CI automatically.
 
-Before execution, a separate supervised setup must install the CI-built runtime
-in `/workspace/home/t3-pilot/runtime`, use Node >=24.10, and configure/sign in the
-Codex instance in the **remote** T3 home `/workspace/home/t3-pilot/t3-home` through
-T3's existing provider setup. Do not copy Mac credentials. No provider login CLI
-is invented here: T3's `auth` CLI handles T3 pairing/sessions, not provider login.
-The authenticated remote UI/SSH pairing path must be verified during this setup;
-public ingress is not enabled by this prototype. Pause and verify the Box afterward.
+The runtime is built before any Box resume. One 30-minute budget starts before the
+watchdog handshake and includes runtime transfer and a maximum eight-minute user
+setup wait, so handshake delays consume rather than extend that budget. The remote T3 server
+runs in setup-only mode until the selected Codex instance is installed, enabled
+and authenticated. No task repository or agent runs during setup. A failed or
+expired setup goes through scoped cancellation and confirmed pause.
 
-GitHub requires a registered/default-branch workflow for manual dispatch. These
-new workflows are on an unmerged draft; registration must be verified before live
-activation. If GitHub requires adding the two workflow files to the fork's default
-branch, obtain separate permission for that narrow bootstrap change. Do not merge
-PR #2 or change the default branch as a workaround.
+These two already registered, manual-only workflow paths are overridden **only on
+the prototype branch**, with explicit disposable names:
+
+- `windows-tests.yml` (ID 357017170): controller/build, formerly Windows Tests.
+- `mobile-showcase-screenshots.yml` (ID 315089437): independent watchdog.
+
+Their original contents remain on `main`. The prototype versions use standard
+Ubuntu runners; they do not run Windows/iOS builds. GitHub permits selecting the
+prototype branch for an existing manual workflow. No default-branch change, merge,
+new trigger or hidden live push trigger is needed. Choose the workflow by its
+stable path/ID because GitHub's sidebar may retain the default-branch display name.
+
+### User-only connection and sign-in, during the approved window
+
+Use a computer with an SSH client and browser. This is not an iPhone connection
+claim. Once Actions reports `awaiting-user-setup`, Thomas opens:
+
+```sh
+ssh -o ExitOnForwardFailure=yes -L 127.0.0.1:3773:127.0.0.1:3773 splendid-kite-93714@us-east-1.box.upstash.com
+```
+
+Enter the existing Box key only at SSH's password prompt. Verify the SSH host key
+through the provider before accepting a new host; do not disable host-key checks.
+In that remote shell, create a short-lived standard-client pairing credential:
+
+```sh
+node /workspace/home/t3-pilot/runtime/dist/bin.mjs auth pairing create --base-dir /workspace/home/t3-pilot/t3-home --base-url http://127.0.0.1:3773 --ttl 5m --label cloud-pilot
+```
+
+Open the resulting pairing URL locally, then Settings → Providers → Codex →
+Sign in with ChatGPT. Installation happens on the Box. Thomas personally approves
+the OAuth connection and **token sharing** (`chatgpt.tokens.use.direct`). This
+managed provider does not use a generic device-code login or `t3 auth` for provider
+login. If sign-in does not return, paste the final localhost redirect URL only in
+T3's password-style “ChatGPT sign-in redirect URL” field and select Connect.
+Neither the pairing URL nor OAuth redirect belongs in chat, Actions output or a
+repository. Do not copy existing Mac credentials. Close the SSH session after
+setup; do not reconnect after cleanup without approval, because Box requests can
+wake paused compute. Port forwarding binds only local loopback and opens no public
+Box endpoint, but authorized local processes can reach that local port.
+
+ChatGPT access/refresh credentials persist under the remote T3 home in T3's
+file-backed secret store (directory 0700, files 0600; not application-encrypted).
+Tasks run as the same Box user and can read that user's files. Approval therefore
+includes granting this dedicated Box/owned-repository experiment access to the
+connected ChatGPT account. Pausing preserves credentials, runtime and task files;
+it does not sign out or revoke OAuth. Revocation/removal is a separate explicit
+user action. GitHub/Box API credentials remain outside the agent process.
 
 One bundled **live** approval must specify: exact prototype SHA, existing Box,
 remote Codex login and allowance, selected public repository/base branch/base SHA,
 required check names, GitHub permissions above, selected approval mode, **$0 extra**
 spend, freshly checked free compute/artifact-storage allowance, and one 30-minute
 window. No paid API key, pay-as-you-go upgrade or new resource is implied. If the
-free allowance or remote login cannot be verified, do not dispatch.
+free allowance cannot be verified, do not dispatch. The Box must already provide
+Node >=24.10. The eight-minute setup check must confirm remote login before tasks.
+For the documented Free small Box (two cores), reserve at least one remaining CPU
+hour for a 30-minute window. The plan's five monthly CPU hours and built-in agent
+token allowance do not fund external Codex usage; verify ChatGPT allowance too.
+No target-repository token is created by this code. Pull requests write is needed
+because the accepted task uses a new branch, not the branch already attached to PR1.
 
 The later Magister task must use a separate task branch from draft PR1 at
 `865bb2c417651b4b448af50d13109404cf7bfda4`, with its actual base branch and CI names
@@ -76,7 +125,7 @@ have been made while preparing this prototype.
 
 ## Execution and evidence
 
-Dispatch `cloud-pilot-execute.yml` on the exact approved branch/head. Supply JSON
+Dispatch `windows-tests.yml` on the exact approved branch/head. Supply JSON
 `repository`, `baseBranch`, `baseSha`, `providerInstanceId`, `instruction`, and unique
 `requiredChecks`; choose `approval-required` or explicitly approve
 `auto-accept-edits`. The worker stops with an `approval-required` receipt if it
@@ -110,3 +159,10 @@ This is bounded best-effort cleanup, not a provider-enforced hard TTL or dollar 
 The current web form remains readiness-only. The first real experiment is started
 through the explicit Actions dispatch, not through an unimplemented UI button.
 Native iPhone packaging and end-to-end paired-client acceptance are still separate.
+
+Verified references:
+
+- https://docs.github.com/en/actions/how-tos/manage-workflow-runs/manually-run-a-workflow
+- https://upstash.com/docs/box/overall/shell
+- https://upstash.com/docs/box/guides/openclaw-setup
+- https://upstash.com/pricing/box

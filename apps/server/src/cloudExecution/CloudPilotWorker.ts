@@ -34,6 +34,8 @@ const PilotReceipt = Schema.Struct({
     "failed",
     "approval-required",
     "interrupted",
+    "setup-waiting",
+    "setup-ready",
   ]),
   cleanupConfirmed: Schema.Boolean,
 });
@@ -44,6 +46,33 @@ type PilotProvider = Pick<
   ProviderServiceShape,
   "startSession" | "sendTurn" | "stopSession" | "interruptTurn" | "streamEvents"
 >;
+
+export const runPilotSetup = Effect.fnUntraced(function* (
+  job: PilotTurn,
+  ready: Effect.Effect<boolean, CloudTaskError>,
+  save: (receipt: PilotReceipt) => Effect.Effect<void, CloudTaskError>,
+) {
+  const now = yield* Clock.currentTimeMillis;
+  let receipt: PilotReceipt = { id: job.id, stage: "setup-waiting", cleanupConfirmed: true };
+  yield* save(receipt);
+  if (job.deadline <= now || job.deadline > now + 480_000) {
+    receipt = { ...receipt, stage: "failed" };
+    yield* save(receipt);
+    return receipt;
+  }
+  yield* Effect.gen(function* () {
+    while (!(yield* ready)) yield* Effect.sleep("2 seconds");
+    receipt = { ...receipt, stage: "setup-ready" };
+  }).pipe(
+    Effect.timeout(job.deadline - now),
+    Effect.catch(() => Effect.sync(() => { receipt = { ...receipt, stage: "failed" }; })),
+    Effect.ensuring(Effect.gen(function* () {
+      if (receipt.stage === "setup-waiting") receipt = { ...receipt, stage: "interrupted" };
+      yield* save(receipt).pipe(Effect.orDie);
+    })),
+  );
+  return receipt;
+});
 
 export const runPilotTurn = Effect.fnUntraced(function* (
   job: PilotTurn,
@@ -135,14 +164,16 @@ export const layer = Layer.effectDiscard(
   forkParked(
     Effect.gen(function* () {
       const enabled = yield* Config.String("T3_CLOUD_PILOT_ENABLED").pipe(Config.withDefault(""));
-      if (enabled !== "explicit-box-activation") return;
+      if (enabled !== "explicit-box-activation" && enabled !== "explicit-box-setup") return;
       const fs = yield* FileSystem.FileSystem;
       const provider = yield* ProviderService;
       const registry = yield* ProviderRegistry;
       const root = "/workspace/home/t3-pilot";
       const job = yield* fs.readFileString(`${root}/turn.json`).pipe(Effect.flatMap(decodeTurn));
       const jobDir = `${root}/jobs/${job.id}`;
-      const receiptPath = `${jobDir}/turn-${job.attempt}.json`;
+      const receiptPath = enabled === "explicit-box-setup"
+        ? `${jobDir}/setup.json`
+        : `${jobDir}/turn-${job.attempt}.json`;
       // Never replay an admitted job after a restart or an uncertain disconnect.
       if (yield* fs.exists(receiptPath)) return;
       const save = (receipt: PilotReceipt) =>
@@ -152,6 +183,16 @@ export const layer = Layer.effectDiscard(
         }).pipe(
           Effect.mapError(() => new CloudTaskError({ message: "Could not persist pilot receipt" })),
         );
+      if (enabled === "explicit-box-setup") {
+        const ready = registry.refreshInstance(job.spec.providerInstanceId).pipe(
+          Effect.map((snapshots) => snapshots.some((item) =>
+            item.instanceId === job.spec.providerInstanceId && item.driver === "codex" &&
+            item.enabled && item.installed && item.auth.status === "authenticated")),
+          Effect.mapError(() => new CloudTaskError({ message: "Could not check remote provider setup" })),
+        );
+        yield* runPilotSetup(job, ready, save);
+        return;
+      }
       const snapshots = yield* registry.refreshInstance(job.spec.providerInstanceId);
       const selected = snapshots.find((item) => item.instanceId === job.spec.providerInstanceId);
       const now = yield* Clock.currentTimeMillis;

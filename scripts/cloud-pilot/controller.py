@@ -22,6 +22,7 @@ import uuid
 
 BASE = "https://us-east-1.box.upstash.com/v2/box/"
 ROOT = "/workspace/home/t3-pilot"
+WATCHDOG_WORKFLOW = "mobile-showcase-screenshots.yml"
 SHA = re.compile(r"[a-f0-9]{40}")
 
 
@@ -136,8 +137,8 @@ class Box:
     def write(self, path, content):
         self.api("/files/write", "POST", {"path": path, "content": content})
 
-    def read(self, path):
-        data = self.api("/files/read?" + urllib.parse.urlencode({"path": path, "length": 16384}))
+    def read(self, path, timeout=20):
+        data = self.api("/files/read?" + urllib.parse.urlencode({"path": path, "length": 16384}), timeout=timeout)
         return json.loads(data["content"])
 
     def pause(self):
@@ -232,6 +233,36 @@ process.exit(1);
     return True
 
 
+def start_server(box, directory, job_id, mode):
+    if mode not in ("explicit-box-setup", "explicit-box-activation"):
+        raise PilotError("Invalid worker mode")
+    box.command(f"T3_PILOT_JOB_ID={job_id} T3_CLOUD_PILOT_ENABLED={mode} nohup timeout --signal=TERM --kill-after=5 650 node {ROOT}/runtime/dist/bin.mjs serve --host 127.0.0.1 --port 3773 --base-dir {ROOT}/t3-home >/dev/null 2>&1 & echo $! > {shlex.quote(directory)}/server.pid")
+
+
+def setup_provider(box, spec, job_id, directory, deadline, runtime_mode):
+    # User completes installation/OAuth in the tunneled T3 UI. No credential is read here.
+    setup_deadline = min(time.time() + 480, deadline - 900)
+    if setup_deadline <= time.time():
+        raise PilotError("No setup budget remains")
+    box.write(ROOT + "/turn.json", json.dumps({"id": job_id, "spec": spec, "attempt": 1,
+        "deadline": int(setup_deadline * 1000), "runtimeMode": runtime_mode}))
+    start_server(box, directory, job_id, "explicit-box-setup")
+    while time.time() < setup_deadline:
+        try:
+            result = box.read(directory + "/setup.json", timeout=max(0.1, min(5, setup_deadline - time.time())))
+        except PilotError:
+            result = None
+        if result and result.get("id") == job_id:
+            if result.get("stage") == "setup-ready":
+                if not stop_server(box, directory):
+                    raise PilotError("Setup server stop unconfirmed")
+                return
+            if result.get("stage") in ("failed", "interrupted"):
+                raise PilotError("Remote setup failed")
+        time.sleep(max(0, min(2, setup_deadline - time.time())))
+    raise PilotError("Eight-minute setup deadline reached")
+
+
 def execute(box, spec, control, target, run_id, runtime_mode, artifact_url, artifact_sha):
     if target.api("").get("private") is not False:
         raise PilotError("This prototype accepts only an approved public repository")
@@ -246,10 +277,10 @@ def execute(box, spec, control, target, run_id, runtime_mode, artifact_url, arti
     if box.api("/status").get("status") != "paused":
         raise PilotError("Selected Box must be paused before arming watchdog")
     # Watchdog must already be running before resume. workflow_dispatch itself is not a receipt.
-    control.api("/actions/workflows/cloud-pilot-watchdog.yml/dispatches", "POST", {
+    control.api(f"/actions/workflows/{WATCHDOG_WORKFLOW}/dispatches", "POST", {
         "ref": os.environ["GITHUB_REF_NAME"], "inputs": {"controller_run": str(run_id), "deadline": str(deadline), "box_id": os.environ["T3_PILOT_BOX_ID"]}})
     for _ in range(24):
-        runs = control.api("/actions/workflows/cloud-pilot-watchdog.yml/runs?event=workflow_dispatch&per_page=100")["workflow_runs"]
+        runs = control.api(f"/actions/workflows/{WATCHDOG_WORKFLOW}/runs?event=workflow_dispatch&per_page=100")["workflow_runs"]
         ready = [r for r in runs if r.get("display_title") == f"pilot-watchdog-{run_id}" and r.get("status") == "in_progress" and r.get("head_sha") == os.environ["GITHUB_SHA"]]
         if any(any(a.get("name") == f"watchdog-ready-{run_id}" for a in control.api(f"/actions/runs/{r['id']}/artifacts")["artifacts"]) for r in ready):
             break
@@ -266,6 +297,9 @@ def execute(box, spec, control, target, run_id, runtime_mode, artifact_url, arti
         q = shlex.quote
         # The URL is a short-lived signed artifact URL, never a GitHub bearer token.
         box.command(f"umask 077; mkdir -p {q(directory)} {ROOT}/runtime; curl --fail --silent --show-error --max-time 120 {q(artifact_url)} -o {q(directory)}/runtime.zip; unzip -q {q(directory)}/runtime.zip -d {q(directory)}/artifact; echo {q(artifact_sha + '  ' + directory + '/artifact/pilot-runtime.tgz')} | sha256sum -c - >/dev/null; tar -xzf {q(directory)}/artifact/pilot-runtime.tgz -C {ROOT}/runtime", 180)
+        state["stage"] = "awaiting-user-setup"; receipt(state)
+        setup_provider(box, spec, job_id, directory, deadline, runtime_mode)
+        state["stage"] = "preparing-repository"; receipt(state)
         # Public repository clone; no write credential exists during install or agent execution.
         box.command(f"git clone --no-checkout https://github.com/{spec['repository']}.git {q(directory)}/repo && git -C {q(directory)}/repo checkout -b {q(branch)} {spec['baseSha']} && test $(git -C {q(directory)}/repo rev-parse HEAD) = {spec['baseSha']}", 120)
         box.command(f"cd {q(directory)}/repo; if test -f pnpm-lock.yaml; then corepack pnpm install --frozen-lockfile; elif test -f package-lock.json; then npm ci; else exit 42; fi", 180)
@@ -275,7 +309,7 @@ def execute(box, spec, control, target, run_id, runtime_mode, artifact_url, arti
             instruction = spec["instruction"] if attempt == 1 else spec["instruction"] + "\nFix the required CI checks for the last commit; keep this task scope. Required checks: " + ", ".join(spec["requiredChecks"])
             turn = {"id": job_id, "spec": {**spec, "instruction": instruction}, "attempt": attempt, "deadline": min(deadline - 180, int(time.time()) + 600) * 1000, "runtimeMode": runtime_mode}
             box.write(ROOT + "/turn.json", json.dumps(turn))
-            box.command(f"T3_PILOT_JOB_ID={job_id} T3_CLOUD_PILOT_ENABLED=explicit-box-activation nohup timeout --signal=TERM --kill-after=5 650 node {ROOT}/runtime/dist/bin.mjs serve --host 127.0.0.1 --port 3773 --base-dir {ROOT}/t3-home >/dev/null 2>&1 & echo $! > {q(directory)}/server.pid")
+            start_server(box, directory, job_id, "explicit-box-activation")
             state.update(stage="agent", attempt=attempt); receipt(state)
             result = None
             for _ in range(130):

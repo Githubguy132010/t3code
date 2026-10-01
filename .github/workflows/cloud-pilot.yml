@@ -8,6 +8,8 @@ on:
       - 'packages/contracts/**'
       - 'packages/client-runtime/**'
       - '.github/workflows/cloud-pilot*.yml'
+      - '.github/workflows/windows-tests.yml'
+      - '.github/workflows/mobile-showcase-screenshots.yml'
       - 'scripts/cloud-pilot/**'
 
 permissions:

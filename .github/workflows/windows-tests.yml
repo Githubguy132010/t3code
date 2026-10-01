@@ -1,81 +1,85 @@
-# On-demand Windows test lane. Manual only: nothing in the suite passes on
-# Windows yet, so this exists to give contributors (and agents) a cloud Windows
-# box to iterate against. Once the suite is green here, fold it into ci.yml.
-#
-#   gh workflow run windows-tests.yml --ref <branch> -f package=packages/shared
-#   gh workflow run windows-tests.yml --ref <branch> -f package=apps/server \
-#     -f files="src/process/externalLauncher.test.ts src/cli/theme.test.ts"
-#   gh run watch && gh run view --log-failed
-name: Windows Tests
-
+# Disposable PR #2 override on feature/upstash-cloud-pilot only. Never merge.
+# The original manual workflow remains unchanged on main.
+name: Disposable cloud pilot execution
 on:
   workflow_dispatch:
     inputs:
-      package:
-        description: "Workspace directory to test, e.g. apps/server or packages/shared. Empty runs every package except apps/server."
+      activation:
+        description: Confirm free quota, scoped token, user OAuth sharing, and 30 minutes including setup
+        required: true
+        type: choice
+        options:
+          - NOT_APPROVED
+          - APPROVED_ZERO_EXTRA_30_MIN
+      spec:
+        description: JSON repository, baseBranch, baseSha, providerInstanceId, instruction, requiredChecks
+        required: true
         type: string
-        default: ""
-      files:
-        description: "Space-separated test files relative to the package directory. Empty runs the package's whole suite. Requires package."
-        type: string
-        default: ""
-
+      runtime_mode:
+        required: true
+        type: choice
+        options:
+          - approval-required
+          - auto-accept-edits
 permissions:
   contents: read
-
+  actions: write
+concurrency:
+  group: disposable-cloud-pilot
+  cancel-in-progress: false
 jobs:
-  test:
-    name: Test (${{ inputs.package || 'all non-server' }})
-    runs-on: blacksmith-8vcpu-windows-2025
-    timeout-minutes: 45
+  build:
+    # Live activation requires a separately approved code change; variables alone cannot enable it.
+    if: false && github.repository == 'Githubguy132010/t3code' && github.event.repository.private == false && vars.T3_PILOT_ENABLED == 'true' && github.sha == vars.T3_PILOT_APPROVED_HEAD && inputs.activation == 'APPROVED_ZERO_EXTRA_30_MIN'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    outputs:
+      digest: ${{ steps.pack.outputs.digest }}
     steps:
-      - name: Checkout
-        uses: actions/checkout@v6
+      - uses: actions/checkout@v6
         with:
-          sparse-checkout: |
-            /*
-            !/.repos/
-          sparse-checkout-cone-mode: false
-
-      # setup-vp's own cache restores a Linux-shaped store on Windows, which is
-      # slower than no cache (see #7975). Cache pnpm's Windows store directly.
-      - name: Setup Vite+
-        uses: voidzero-dev/setup-vp@v1
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@v4
         with:
-          node-version-file: package.json
-          cache: false
-          run-install: false
-
-      - name: Resolve package cache path
-        id: package_cache_path
-        shell: pwsh
-        run: '"path=$(vp pm cache dir)" >> $env:GITHUB_OUTPUT'
-
-      - name: Cache packages
-        uses: actions/cache@v6
+          node-version: '24.13.1'
+      - run: |
+          npm install --global pnpm@11.10.0
+          pnpm install --frozen-lockfile --ignore-scripts --filter t3... --filter @t3tools/web... --filter @t3tools/client-runtime... --filter @t3tools/oxlint-plugin-t3code... --filter @t3tools/scripts...
+          (cd apps/web && ../../node_modules/.bin/vp build)
+          (cd apps/server && ../../node_modules/.bin/vp pack)
+      - id: pack
+        run: bash scripts/cloud-pilot/package.sh
+      - uses: actions/upload-artifact@v4
         with:
-          path: ${{ steps.package_cache_path.outputs.path }}
-          key: windows-tests-packages-v1-${{ hashFiles('pnpm-lock.yaml') }}
-
-      - name: Install
-        run: vp install
-
-      - name: Ensure Electron runtime is installed
-        if: inputs.package == '' || inputs.package == 'apps/desktop'
-        run: vp run --filter "@t3tools/desktop" ensure:electron
-
-      # `vp run ... test -- <files>` does not forward positional args to vitest,
-      # so file-scoped runs call `vp test run` inside the package instead.
-      - name: Test
-        shell: pwsh
-        run: |
-          $package = '${{ inputs.package }}'
-          $files = '${{ inputs.files }}'
-          if ($package -eq '') {
-            vp run --parallel --concurrency-limit 4 --filter '!t3' --filter '!@t3tools/monorepo' test
-          } elseif ($files -eq '') {
-            vp run --filter "./$package" test
-          } else {
-            Set-Location $package
-            vp test run $files.Split(' ')
-          }
+          name: pilot-runtime
+          path: pilot-runtime.tgz
+          retention-days: 1
+  execute:
+    if: false
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 33
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Bounded remote task
+        env:
+          T3_PILOT_ACTIVATION: ${{ inputs.activation }}
+          T3_PILOT_BOX_ID: ${{ vars.T3_PILOT_BOX_ID }}
+          T3_PILOT_APPROVED_REPOSITORY: ${{ vars.T3_PILOT_APPROVED_REPOSITORY }}
+          T3_PILOT_BOX_API_KEY: ${{ secrets.T3_PILOT_BOX_API_KEY }}
+          T3_PILOT_REPO_TOKEN: ${{ secrets.T3_PILOT_REPO_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
+          PILOT_SPEC: ${{ inputs.spec }}
+          PILOT_RUNTIME_MODE: ${{ inputs.runtime_mode }}
+          PILOT_ARTIFACT_SHA256: ${{ needs.build.outputs.digest }}
+        run: python3 scripts/cloud-pilot/controller.py
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: task-${{ github.run_id }}
+          path: receipt.json
+          retention-days: 7

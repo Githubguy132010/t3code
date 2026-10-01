@@ -136,5 +136,38 @@ class ControllerTests(unittest.TestCase):
                 pilot.push_bundle({"repository": "owner/repo", "baseSha": "a" * 40}, "task", "b" * 40)
         self.assertFalse(any("push" in command for command in commands))
 
+    def test_setup_waits_for_matching_receipt_and_stops_before_task(self):
+        from unittest.mock import Mock
+        box = Mock()
+        box.read.side_effect = [{"id": "b" * 32, "stage": "setup-ready"},
+            {"id": "a" * 32, "stage": "setup-waiting"}, {"id": "a" * 32, "stage": "setup-ready"}]
+        with patch.object(pilot.time, "time", return_value=100), patch.object(pilot.time, "sleep"), patch.object(pilot, "start_server") as start, patch.object(pilot, "stop_server", return_value=True) as stop:
+            pilot.setup_provider(box, {"providerInstanceId": "codex"}, "a" * 32, "/job", 1900, "approval-required")
+        self.assertEqual(box.read.call_count, 3)
+        self.assertEqual(start.call_args.args[-1], "explicit-box-setup")
+        stop.assert_called_once()
+
+    def test_setup_deadline_never_starts_agent(self):
+        from unittest.mock import Mock
+        box = Mock()
+        with patch.object(pilot.time, "time", side_effect=[100, 100, 581]), patch.object(pilot, "start_server") as start:
+            with self.assertRaises(pilot.PilotError):
+                pilot.setup_provider(box, {}, "a" * 32, "/job", 1900, "approval-required")
+        self.assertEqual(start.call_args.args[-1], "explicit-box-setup")
+        box.read.assert_not_called()
+
+    def test_setup_failure_flows_through_confirmed_pause(self):
+        from unittest.mock import Mock
+        box = Mock(); box.api.side_effect = [{"status": "paused"}, {"status": "paused"}, {}, {"status": "running"}]; box.pause.return_value = True
+        control = Mock(); control.api.side_effect = [{}, {"workflow_runs": [{"id": 7, "display_title": "pilot-watchdog-42", "status": "in_progress", "head_sha": "head"}]}, {"artifacts": [{"name": "watchdog-ready-42"}]}]
+        target = Mock(); target.api.return_value = {"private": False}
+        with patch.dict(pilot.os.environ, {"GITHUB_REF_NAME": "feature/upstash-cloud-pilot", "GITHUB_SHA": "head", "T3_PILOT_BOX_ID": "selected-box"}), patch.object(pilot, "setup_provider", side_effect=pilot.PilotError("setup deadline")), patch.object(pilot, "stop_server", return_value=True), patch.object(pilot, "receipt") as save:
+            with self.assertRaises(pilot.PilotError):
+                pilot.execute(box, {"repository": "owner/repo"}, control, target, 42, "approval-required", "https://example.test/artifact", "a" * 64)
+        box.pause.assert_called_once()
+        self.assertEqual(save.call_args.args[0]["stage"], "failed")
+        self.assertTrue(save.call_args.args[0]["cleanupConfirmed"])
+        self.assertEqual(box.command.call_count, 1)  # runtime install only; no repository or agent work
+
 
 if __name__ == "__main__": unittest.main()
