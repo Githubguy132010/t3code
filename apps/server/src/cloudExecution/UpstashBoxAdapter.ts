@@ -1,5 +1,5 @@
-import { setTimeout, clearTimeout } from "node:timers";
-import { createHash } from "node:crypto";
+import * as NodeTimers from "node:timers";
+import * as NodeCrypto from "node:crypto";
 import type { CloudExecutionCommand, CloudExecutionSnapshot } from "@t3tools/contracts";
 const BASE = "https://us-east-1.box.upstash.com";
 const MAX_BYTES = 1024 * 1024;
@@ -12,7 +12,7 @@ export class UpstashBoxSession {
   #deadline: number | null = null;
   #pauseAttempts = 0;
   #resumeAttempted = false;
-  #timer: ReturnType<typeof setTimeout> | undefined;
+  #timer: ReturnType<typeof NodeTimers.setTimeout> | undefined;
   #active: Promise<CloudExecutionSnapshot> | undefined;
   #cleanup: Promise<CloudExecutionSnapshot> | undefined;
   #closing = false;
@@ -59,7 +59,7 @@ export class UpstashBoxSession {
           }
           this.#phase = "paused";
           this.#key = undefined;
-          clearTimeout(this.#timer);
+          NodeTimers.clearTimeout(this.#timer);
           return this.snapshot();
         } catch {
           // The total attempt budget applies equally to manual and deadline cleanup.
@@ -119,7 +119,7 @@ export class UpstashBoxSession {
         if (this.#resumeAttempted || this.#closing) {
           this.#phase = "paused";
           this.#key = undefined;
-          clearTimeout(this.#timer);
+          NodeTimers.clearTimeout(this.#timer);
         } else this.#phase = "ready";
       } else if (status === "idle" || status === "running") {
         if (!this.#resumeAttempted) {
@@ -160,7 +160,7 @@ export class UpstashBoxSession {
       this.#deadline = this.now() + 1800_000;
       // Reserve 150 seconds for up to three 45-second cleanup attempts.
       // Starts before the request, including an uncertain resume outcome.
-      this.#timer = setTimeout(() => {
+      this.#timer = NodeTimers.setTimeout(() => {
         void this.execute({ action: "pause" }).catch(() => undefined);
       }, 1650_000);
       this.#timer.unref();
@@ -199,7 +199,7 @@ export class UpstashBoxSession {
         export: {
           patch,
           bytes: payload.length,
-          sha256: createHash("sha256").update(payload).digest("hex"),
+          sha256: NodeCrypto.createHash("sha256").update(payload).digest("hex"),
         },
       };
     }
@@ -210,7 +210,7 @@ export class UpstashBoxSession {
       if (this.#resumeAttempted && this.#phase !== "paused")
         await this.execute({ action: "pause" });
     } finally {
-      clearTimeout(this.#timer);
+      NodeTimers.clearTimeout(this.#timer);
       this.#key = undefined;
     }
   }

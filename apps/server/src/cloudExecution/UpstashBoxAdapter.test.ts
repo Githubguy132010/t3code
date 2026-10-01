@@ -1,3 +1,7 @@
+vi.mock("node:timers", () => ({
+  setTimeout: (...args: Parameters<typeof setTimeout>) => setTimeout(...args),
+  clearTimeout: (...args: Parameters<typeof clearTimeout>) => clearTimeout(...args),
+}));
 import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 import { UpstashBoxSession } from "./UpstashBoxAdapter.ts";
 const key = "dummy-pilot-only";

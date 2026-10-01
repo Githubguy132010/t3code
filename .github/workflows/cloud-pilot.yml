@@ -44,15 +44,20 @@ jobs:
           (cd packages/contracts && ../../node_modules/.bin/vp test run src/cloudExecution.test.ts)
           (cd apps/web && ../../node_modules/.bin/vp test run src/components/settings/CloudExecutionSettings.test.tsx)
       - name: Sequential measured typechecks
+        if: success() || failure()
         run: |
           for project in packages/contracts packages/client-runtime apps/server apps/web; do
             echo "TYPECHECK $project $(date -u +%FT%TZ)"
             /usr/bin/time -v timeout --verbose --kill-after=5 120 node_modules/.bin/tsc --noEmit -p "$project/tsconfig.json"
           done
-      - name: Focused lint and formatting
+      - name: Focused lint
         if: success() || failure()
         run: |
           files=(apps/server/src/cloudExecution/*.ts apps/web/src/components/settings/CloudExecutionSettings*.tsx packages/contracts/src/cloudExecution*.ts packages/client-runtime/src/state/cloudExecution.ts)
           node_modules/.bin/vp lint "${files[@]}"
+      - name: Formatting
+        if: success() || failure()
+        run: |
+          files=(apps/server/src/cloudExecution/*.ts apps/web/src/components/settings/CloudExecutionSettings*.tsx packages/contracts/src/cloudExecution*.ts packages/client-runtime/src/state/cloudExecution.ts)
           node_modules/.bin/vp fmt "${files[@]}"
           git diff --exit-code

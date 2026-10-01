@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vite-plus/test";
 import * as Schema from "effect/Schema";
 import { CloudExecutionCommand, CloudExecutionSnapshot } from "./cloudExecution.ts";
+const isSnapshot = Schema.is(CloudExecutionSnapshot);
 describe("cloud execution contracts", () => {
   it("accepts only the bounded free resume contract", () => {
     const valid = Schema.is(CloudExecutionCommand);
@@ -17,7 +18,7 @@ describe("cloud execution contracts", () => {
   });
   it("models unconfirmed pause separately from completed pause", () => {
     expect(
-      Schema.is(CloudExecutionSnapshot)({
+      isSnapshot({
         boxId: "selected-box",
         phase: "pausing",
         deadline: 123,
