@@ -1,3 +1,4 @@
+import { setTimeout, clearTimeout } from "node:timers";
 import { createHash } from "node:crypto";
 import type { CloudExecutionCommand, CloudExecutionSnapshot } from "@t3tools/contracts";
 const BASE = "https://us-east-1.box.upstash.com";
@@ -16,10 +17,12 @@ export class UpstashBoxSession {
   #cleanup: Promise<CloudExecutionSnapshot> | undefined;
   #closing = false;
   #abort: AbortController | undefined;
-  constructor(
-    private readonly request: typeof fetch = fetch,
-    private readonly now: () => number = Date.now,
-  ) {}
+  private readonly request: typeof fetch;
+  private readonly now: () => number;
+  constructor(request: typeof fetch = fetch, now: () => number = Date.now) {
+    this.request = request;
+    this.now = now;
+  }
   snapshot(): CloudExecutionSnapshot {
     return {
       boxId: this.#boxId,

@@ -15,7 +15,7 @@ export class CloudExecutionService extends Context.Service<
       command: CloudExecutionCommand,
     ) => Effect.Effect<CloudExecutionSnapshot, CloudExecutionError>;
   }
->()("@t3tools/server/CloudExecutionService") {}
+>()("t3/cloudExecution/CloudExecutionService") {}
 export const layer = Layer.effect(
   CloudExecutionService,
   Effect.gen(function* () {

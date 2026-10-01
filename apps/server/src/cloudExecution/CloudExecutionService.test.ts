@@ -21,7 +21,7 @@ it("isolates the in-memory key owner and returns only safe state", async () => {
         apiKey: "dummy-pilot-only",
       });
       expect(state.phase).toBe("ready");
-      expect(JSON.stringify(state)).not.toContain("dummy-pilot-only");
+      expect(state).toEqual({ boxId: "selected-box", phase: "ready", deadline: null, pauseAttempts: 0 });
       const denied = yield* Effect.result(service.execute("owner-b", { action: "pause" }));
       expect(denied._tag).toBe("Failure");
       expect(vi.mocked(fetch)).toHaveBeenCalledTimes(1);
