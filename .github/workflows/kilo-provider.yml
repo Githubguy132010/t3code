@@ -1,0 +1,62 @@
+name: Kilo provider checks
+
+on:
+  pull_request:
+    paths:
+      - .github/workflows/kilo-provider.yml
+      - apps/server/src/provider/kilo/**
+      - apps/server/package.json
+      - pnpm-lock.yaml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: kilo-provider-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  local-sdk:
+    # The upstream suite uses Blacksmith runners unavailable to this fork.
+    # Reassess this workflow before proposing the provider upstream.
+    if: github.repository == 'Githubguy132010/t3code'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          # Verify the exact PR head rather than an implicit merge commit.
+          ref: ${{ github.event.pull_request.head.sha }}
+
+      - uses: voidzero-dev/setup-vp@v1
+        with:
+          node-version-file: package.json
+          cache: true
+          run-install: true
+
+      - name: Install the pinned local Kilo CLI
+        run: npm install --prefix "$RUNNER_TEMP/kilo-probe" --ignore-scripts @kilocode/cli@7.8.3
+
+      - name: Lint the Kilo client
+        run: vp lint apps/server/src/provider/kilo --deny-warnings
+
+      - name: Check server types
+        run: vp exec tsc --noEmit -p apps/server
+
+      - name: Check server dependencies and exports
+        run: vp exec knip --workspace apps/server --include files,dependencies,exports --preprocessor ./scripts/knip-schemas.ts --no-config-hints
+
+      - name: Test native Kilo sessions and OpenCode regressions
+        env:
+          KILO_BIN: ${{ runner.temp }}/kilo-probe/node_modules/.bin/kilo
+          KILO_TEST_ROOT: ${{ runner.temp }}
+        run: >-
+          vp test run
+          apps/server/src/provider/kilo
+          apps/server/src/orchestration-v2/Adapters/OpenCodeAdapterV2.test.ts
+          apps/server/src/provider/opencodeRuntime.environment.test.ts
+          apps/server/src/provider/opencodeRuntime.permissions.test.ts
+          apps/server/src/provider/Drivers/OpenCodeDriver.test.ts
+
+      - name: Build the server bundle
+        run: vp run --filter t3 build:bundle
