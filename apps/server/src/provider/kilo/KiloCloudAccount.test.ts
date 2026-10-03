@@ -31,7 +31,7 @@ it.live("separates credential rejection, account support and temporary profile f
           );
         });
         server.listen(0, "127.0.0.1");
-        await NodeEvents.once(server, "listening");
+        await NodeEvents.EventEmitter.once(server, "listening");
         return server;
       }),
       (server) =>
