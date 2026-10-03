@@ -237,6 +237,7 @@ try {
   await page.getByRole("button", { name: "Providers", exact: true }).click();
   await page.waitForURL("**/settings/providers*");
   await page.getByRole("button", { name: "Add provider", exact: true }).waitFor();
+  await page.getByRole("button", { name: "Select Kilo Cloud", exact: true }).click();
   if (process.env.KILO_CLOUD_TEST_PROFILE) {
     const consent = page.getByRole("switch", { name: "Allow paid cloud execution", exact: true });
     await consent.click();

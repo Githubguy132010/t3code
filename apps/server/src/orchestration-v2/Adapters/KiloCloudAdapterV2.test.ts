@@ -48,6 +48,9 @@ const fixture = Effect.acquireRelease(
       interruptAccepted: false,
       interruptPosts: 0,
       permission: false,
+      question: false,
+      questionPosts: 0,
+      questionAnswers: null as unknown,
       answerAccepted: false,
       answerPosts: 0,
     };
@@ -100,6 +103,12 @@ const fixture = Effect.acquireRelease(
           if (control.interruptAccepted) control.status = "interrupted";
           return reply({ success: control.interruptAccepted });
         }
+        if (operation === "cloudAgentNext.answerQuestion") {
+          control.questionPosts++;
+          control.questionAnswers = input.answers;
+          control.question = false;
+          return reply({ success: true });
+        }
         if (operation === "cloudAgentNext.answerPermission") {
           control.answerPosts++;
           if (control.answerAccepted) control.permission = false;
@@ -144,7 +153,26 @@ const fixture = Effect.acquireRelease(
                   },
                 ]
               : [],
-            questions: [],
+            questions: control.question
+              ? [
+                  {
+                    id: "question-fixture",
+                    sessionID: state.native,
+                    questions: [
+                      {
+                        header: "Files",
+                        question: "Which files?",
+                        multiple: true,
+                        custom: false,
+                        options: [
+                          { label: "README.md", description: "Documentation" },
+                          { label: "fixture.py", description: "Synthetic code" },
+                        ],
+                      },
+                    ],
+                  },
+                ]
+              : [],
           });
         if (operation === "cloudAgentNext.getMessageResult")
           return reply({
@@ -431,24 +459,39 @@ it.live(
       yield* Fiber.interrupt(restoredEvents);
       remote.control.status = "running";
       remote.control.permission = true;
+      remote.control.question = true;
       remote.control.incompleteHistory = true;
       const pendingRequest =
         yield* Deferred.make<
           Extract<Adapter.ProviderAdapterV2Event, { type: "runtime_request.updated" }>
         >();
+      const pendingQuestion =
+        yield* Deferred.make<
+          Extract<Adapter.ProviderAdapterV2Event, { type: "runtime_request.updated" }>
+        >();
+      const questionResolved = yield* Deferred.make<void>();
       const resolvedItems: Array<Adapter.ProviderAdapterV2Event> = [];
       const failedWithoutHistory = yield* Deferred.make<void>();
       yield* restored.events.pipe(
         Stream.runForEach((event) =>
           Effect.gen(function* () {
             resolvedItems.push(event);
+            if (
+              event.type === "turn_item.updated" &&
+              event.turnItem.type === "user_input_request" &&
+              event.turnItem.status === "completed"
+            )
+              yield* Deferred.succeed(questionResolved, undefined);
             if (event.type === "turn.terminal" && event.status === "failed")
               yield* Deferred.succeed(failedWithoutHistory, undefined);
             if (
               event.type === "runtime_request.updated" &&
               event.runtimeRequest.status === "pending"
             )
-              yield* Deferred.succeed(pendingRequest, event);
+              yield* Deferred.succeed(
+                event.runtimeRequest.kind === "user_input" ? pendingQuestion : pendingRequest,
+                event,
+              );
           }),
         ),
         Effect.forkScoped,
@@ -467,6 +510,36 @@ it.live(
           text: "Follow up in the same workspace",
         },
       });
+      const question = yield* Deferred.await(pendingQuestion);
+      const unanswered = yield* restored
+        .respondToRuntimeRequest({ requestId: question.runtimeRequest.id, answers: {} })
+        .pipe(Effect.flip);
+      assert.include(unanswered.message, "requires an answer");
+      assert.equal(remote.control.questionPosts, 0);
+      yield* restored.respondToRuntimeRequest({
+        requestId: question.runtimeRequest.id,
+        answers: { "0": ["README.md", "fixture.py"] },
+      });
+      yield* Deferred.await(questionResolved);
+      assert.equal(remote.control.questionPosts, 1);
+      assert.deepEqual(remote.control.questionAnswers, [["README.md", "fixture.py"]]);
+      assert.isTrue(
+        resolvedItems.some(
+          (event) =>
+            event.type === "turn_item.updated" &&
+            event.turnItem.type === "user_input_request" &&
+            event.turnItem.questions[0]?.multiSelect === true &&
+            event.turnItem.questions[0]?.allowCustomAnswer === false,
+        ),
+      );
+      assert.isTrue(
+        resolvedItems.some(
+          (event) =>
+            event.type === "turn_item.updated" &&
+            event.turnItem.type === "user_input_request" &&
+            event.turnItem.status === "completed",
+        ),
+      );
       const pending = yield* Deferred.await(pendingRequest);
       yield* restored
         .respondToRuntimeRequest({ requestId: pending.runtimeRequest.id, decision: "accept" })
