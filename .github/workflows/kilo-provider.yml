@@ -31,7 +31,8 @@ jobs:
   provider-integration:
     # The upstream suite uses Blacksmith runners unavailable to this fork.
     # Reassess this workflow before proposing the provider upstream.
-    if: github.repository == 'Githubguy132010/t3code'
+    # The owner's former login redirects; the repository ID survives that rename.
+    if: github.repository_id == '1286185343'
     runs-on: ubuntu-24.04
     timeout-minutes: 25
     steps:
@@ -117,6 +118,14 @@ jobs:
           KILO_BIN: ${{ runner.temp }}/kilo-probe/node_modules/.bin/kilo
           KILO_EVIDENCE_DIR: ${{ runner.temp }}/kilo-evidence
         run: node apps/desktop/scripts/kilo-ui-evidence.mjs
+
+      - name: Compare equivalent stream workloads against the unchanged SDK layer
+        run: |
+          mkdir -p "$RUNNER_TEMP/kilo-baseline" "$RUNNER_TEMP/kilo-evidence"
+          git fetch --no-tags --depth=1 origin dfa68127e1a4a992b4184babe0e193432465bdd2
+          git show dfa68127e1a4a992b4184babe0e193432465bdd2:apps/server/src/provider/kilo/KiloSessionClient.ts > "$RUNNER_TEMP/kilo-baseline/KiloSessionClient.ts"
+          ln -s "$GITHUB_WORKSPACE/apps/server/node_modules" "$RUNNER_TEMP/kilo-baseline/node_modules"
+          node --expose-gc apps/server/scripts/kilo-stream-benchmark.mjs "$RUNNER_TEMP/kilo-baseline/KiloSessionClient.ts" > "$RUNNER_TEMP/kilo-evidence/stream-benchmark.json"
 
       - uses: actions/upload-artifact@v4
         if: always()
