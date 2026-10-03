@@ -336,7 +336,7 @@ function ThreadRouteContent(
   } = useThreadSelection();
   const selectedThreadDetailState = props.selectedThreadDetailState;
   const selectedThreadDetail = Option.getOrNull(selectedThreadDetailState.data);
-  const { selectedThreadCwd } = useSelectedThreadWorktree();
+  const { selectedThreadCwd, localWorkspaceEnabled } = useSelectedThreadWorktree();
   const composer = useThreadComposerState();
   const gitState = useSelectedThreadGitState();
   const gitActions = useSelectedThreadGitActions();
@@ -374,6 +374,7 @@ function ThreadRouteContent(
   const mergeBackBusyRef = useRef(false);
   const handleMergeBack = useCallback(async () => {
     if (
+      !localWorkspaceEnabled ||
       mergeBackBusyRef.current ||
       !selectedThread ||
       mergeBackTargetThreadId === null ||
@@ -400,7 +401,14 @@ function ThreadRouteContent(
     } finally {
       mergeBackBusyRef.current = false;
     }
-  }, [mergeBack, mergeBackRun, mergeBackTargetThreadId, navigation, selectedThread]);
+  }, [
+    localWorkspaceEnabled,
+    mergeBack,
+    mergeBackRun,
+    mergeBackTargetThreadId,
+    navigation,
+    selectedThread,
+  ]);
   const params = props.route.params;
   const environmentIdRaw = firstRouteParam(params.environmentId);
   const environmentId = environmentIdRaw ? EnvironmentId.make(environmentIdRaw) : null;
@@ -469,6 +477,16 @@ function ThreadRouteContent(
   const routeConnectionState =
     routeEnvironmentRuntime?.connectionState ?? (environmentId ? "available" : connectionState);
   const routeConnectionError = routeEnvironmentRuntime?.connectionError ?? null;
+  const isCloudThread =
+    !!selectedThreadDetail?.providerThreads.find(
+      (thread) => thread.id === selectedThreadDetail.thread.activeProviderThreadId,
+    )?.nativeMetadata?.cloudExecution ||
+    (routeEnvironmentRuntime?.serverConfig?.providers.some(
+      (provider) =>
+        provider.instanceId === selectedThread?.providerInstanceId &&
+        provider.driver === "kilo-cloud",
+    ) ??
+      false);
   const selectedThreadWithDraftSettings = useMemo(
     () =>
       selectedThread
@@ -530,6 +548,7 @@ function ThreadRouteContent(
   const gitActionProgress = useGitActionProgress(gitActionProgressTarget);
 
   const handleOpenGitInspector = useCallback(() => {
+    if (isCloudThread) return;
     if (!fileInspector.supported) {
       if (selectedThread === null) {
         return;
@@ -542,9 +561,16 @@ function ThreadRouteContent(
     }
     setInspectorSelection({ routeThreadIdentity, mode: "git" });
     showAuxiliaryPane("inspector");
-  }, [fileInspector.supported, navigation, routeThreadIdentity, selectedThread, showAuxiliaryPane]);
+  }, [
+    fileInspector.supported,
+    isCloudThread,
+    navigation,
+    routeThreadIdentity,
+    selectedThread,
+    showAuxiliaryPane,
+  ]);
   const handleOpenFilesInspector = useCallback(() => {
-    if (selectedThread === null || selectedThreadCwd === null) {
+    if (isCloudThread || selectedThread === null || selectedThreadCwd === null) {
       return;
     }
     if (!fileInspector.supported) {
@@ -560,6 +586,7 @@ function ThreadRouteContent(
     });
     showAuxiliaryPane("inspector");
   }, [
+    isCloudThread,
     fileInspector.supported,
     navigation,
     props.renderInspector,
@@ -664,7 +691,8 @@ function ThreadRouteContent(
       selectedThreadCwd,
     ],
   );
-  const activeInspectorRenderer = inspectorMode === null ? undefined : renderInspectorStack;
+  const activeInspectorRenderer =
+    isCloudThread || inspectorMode === null ? undefined : renderInspectorStack;
   // Hand the inspector to the workspace so it renders beside the navigator,
   // outside this screen's native header — the terminal/git/files toolbar
   // stays anchored to the chat pane instead of floating above the inspector.
@@ -694,7 +722,7 @@ function ThreadRouteContent(
         hasWorkspaceRoot: Boolean(selectedThreadProject?.workspaceRoot),
       });
 
-      if (!selectedThread || !selectedThreadProject?.workspaceRoot) {
+      if (isCloudThread || !selectedThread || !selectedThreadProject?.workspaceRoot) {
         return;
       }
 
@@ -704,7 +732,7 @@ function ThreadRouteContent(
         ...(nextTerminalId ? { terminalId: nextTerminalId } : {}),
       });
     },
-    [navigation, selectedThread, selectedThreadProject?.workspaceRoot],
+    [isCloudThread, navigation, selectedThread, selectedThreadProject?.workspaceRoot],
   );
 
   const handleOpenNewTerminal = useCallback(() => {
@@ -714,7 +742,7 @@ function ThreadRouteContent(
       listedTerminalIds: terminalMenuSessions.map((session) => session.terminalId),
     });
 
-    if (!selectedThread || !selectedThreadProject?.workspaceRoot) {
+    if (isCloudThread || !selectedThread || !selectedThreadProject?.workspaceRoot) {
       return;
     }
 
@@ -726,7 +754,13 @@ function ThreadRouteContent(
       threadId: String(selectedThread.id),
       terminalId: nextId,
     });
-  }, [navigation, selectedThread, selectedThreadProject?.workspaceRoot, terminalMenuSessions]);
+  }, [
+    isCloudThread,
+    navigation,
+    selectedThread,
+    selectedThreadProject?.workspaceRoot,
+    terminalMenuSessions,
+  ]);
 
   const handleRunProjectScript = useCallback(
     async (script: ProjectScript) => {
@@ -737,7 +771,7 @@ function ThreadRouteContent(
         hasWorkspaceRoot: Boolean(selectedThreadProject?.workspaceRoot),
       });
 
-      if (!selectedThread || !selectedThreadProject?.workspaceRoot) {
+      if (isCloudThread || !selectedThread || !selectedThreadProject?.workspaceRoot) {
         terminalDebugLog("project-script:abort", {
           scriptId: script.id,
           reason: "no-thread-or-workspace",
@@ -790,6 +824,7 @@ function ThreadRouteContent(
       });
     },
     [
+      isCloudThread,
       navigation,
       selectedThread,
       selectedThreadDetailWorktreePath,
@@ -798,27 +833,34 @@ function ThreadRouteContent(
     ],
   );
   const threadGitControlProps = {
+    gitControlsEnabled: localWorkspaceEnabled,
     environmentId: environmentIdRaw ?? "",
     threadId: threadId ?? "",
     auxiliaryPaneControl:
-      !layout.usesSplitView && fileInspector.supported && selectedThreadCwd !== null
+      localWorkspaceEnabled &&
+      !layout.usesSplitView &&
+      fileInspector.supported &&
+      selectedThreadCwd !== null
         ? {
             accessibilityLabel: "Toggle inspector",
             onPress: handleToggleInspector,
           }
         : undefined,
     onOpenFilesInspector:
-      fileInspector.supported && selectedThreadCwd !== null ? handleOpenFilesInspector : undefined,
-    onOpenGitInspector: fileInspector.supported ? handleOpenGitInspector : undefined,
+      !isCloudThread && fileInspector.supported && selectedThreadCwd !== null
+        ? handleOpenFilesInspector
+        : undefined,
+    onOpenGitInspector:
+      !isCloudThread && fileInspector.supported ? handleOpenGitInspector : undefined,
     onMergeBack:
-      mergeBackTargetThreadId !== null && mergeBackRun !== null
+      localWorkspaceEnabled && mergeBackTargetThreadId !== null && mergeBackRun !== null
         ? () => void handleMergeBack()
         : undefined,
     currentBranch: selectedThread?.branch ?? null,
     gitStatus: gitStatus.data,
     gitOperationLabel: gitState.gitOperationLabel,
-    canOpenTerminal: Boolean(selectedThreadProject?.workspaceRoot),
-    canOpenFiles: Boolean(selectedThreadProject?.workspaceRoot),
+    canOpenTerminal: !isCloudThread && Boolean(selectedThreadProject?.workspaceRoot),
+    canOpenFiles: !isCloudThread && Boolean(selectedThreadProject?.workspaceRoot),
     projectScripts: selectedThreadProject
       ? resolveProjectScripts(
           routeEnvironmentRuntime?.serverConfig?.settings ?? DEFAULT_SERVER_SETTINGS,
@@ -1091,9 +1133,9 @@ function ThreadRouteContent(
         headerColor={headerColor}
         usesNativeHeaderGlass={usesNativeHeaderGlass}
         gitControls={threadGitControlProps}
-        hasThreadCwd={selectedThreadCwd !== null}
-        hasWorkspaceRoot={Boolean(selectedThreadProject?.workspaceRoot)}
-        fileInspectorSupported={fileInspector.supported}
+        hasThreadCwd={!isCloudThread && selectedThreadCwd !== null}
+        hasWorkspaceRoot={!isCloudThread && Boolean(selectedThreadProject?.workspaceRoot)}
+        fileInspectorSupported={!isCloudThread && fileInspector.supported}
         inspectorMode={inspectorMode}
         onToggleInspector={handleToggleInspector}
         onOpenGitInspector={handleOpenGitInspector}

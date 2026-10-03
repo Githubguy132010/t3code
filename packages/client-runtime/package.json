@@ -362,6 +362,10 @@
     "./device/duo-control": {
       "types": "./src/device/duoControl.ts",
       "default": "./src/device/duoControl.ts"
+    },
+    "./kilo-icon": {
+      "types": "./src/kiloIcon.ts",
+      "default": "./src/kiloIcon.ts"
     }
   },
   "scripts": {

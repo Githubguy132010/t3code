@@ -6,6 +6,8 @@ import {
   CursorSettings,
   GrokSettings,
   OpenCodeSettings,
+  KiloSettings,
+  KiloCloudSettings,
   PiSettings,
   ProviderDriverKind,
 } from "@t3tools/contracts";
@@ -47,6 +49,29 @@ export interface ProviderEnvironmentFieldDefinition {
 }
 
 const PROVIDER_CLIENT_DEFINITIONS: readonly ProviderClientDefinition[] = [
+  {
+    value: ProviderDriverKind.make("kilo-cloud"),
+    label: "Kilo Cloud",
+    settingsSchema: KiloCloudSettings,
+    hasDefaultInstance: false,
+    badgeLabel: "Preview",
+  },
+  {
+    value: ProviderDriverKind.make("kilo"),
+    label: "Kilo",
+    settingsSchema: KiloSettings,
+    hasDefaultInstance: false,
+    badgeLabel: "Preview",
+    environmentFields: [
+      {
+        name: "KILO_API_KEY",
+        label: "Kilo API key",
+        sensitive: true,
+        description:
+          "Optional existing key for this account profile. Stored with this provider's environment.",
+      },
+    ],
+  },
   {
     value: ProviderDriverKind.make("codex"),
     label: "Codex",

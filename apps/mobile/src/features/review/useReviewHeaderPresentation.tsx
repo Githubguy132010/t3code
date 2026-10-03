@@ -43,6 +43,7 @@ export function useReviewHeaderPresentation(props: {
   const gitMenuAvailable =
     selectedThread !== null && String(selectedThread.id) === String(props.threadId);
   const gitMenu = useThreadGitMenuDefinition({
+    gitControlsEnabled: props.selectedThreadCwd !== null,
     environmentId: props.environmentId,
     threadId: props.threadId,
     currentBranch: selectedThread?.branch ?? null,

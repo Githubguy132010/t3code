@@ -505,6 +505,7 @@ export interface RunExecutionServiceV2StartRootRunInput {
   readonly attempt: OrchestrationV2RunAttempt;
   readonly attemptId: RunAttemptId;
   readonly providerTurnOrdinal: number;
+  readonly reattach?: boolean;
   readonly loadInheritedBackgroundTurnItems?: () => Effect.Effect<
     ReadonlyArray<InheritedBackgroundTurnItemRoute>,
     unknown
@@ -562,6 +563,7 @@ export const layer: Layer.Layer<
       readonly openRunOwnedSubagents?: OpenRunOwnedSubagentProjection;
       readonly terminal: ProviderTerminalEvent;
       readonly failureItemPersisted: boolean;
+      readonly checkpointFilesystem: boolean;
       readonly refreshAfterTurn: Effect.Effect<void>;
       readonly writeIfRunCurrent?: {
         readonly activeAttemptId: RunAttemptId;
@@ -631,7 +633,9 @@ export const layer: Layer.Layer<
               })
             : [];
         const persistedStatus =
-          input.terminal.status === "completed" ? "waiting" : input.terminal.status;
+          input.terminal.status === "completed" && input.checkpointFilesystem
+            ? "waiting"
+            : input.terminal.status;
         // Completion cohorts are advanced by Orchestrator while a provider
         // turn is in flight. Do not replay the run snapshot captured at start
         // over a newer acknowledgement, successor, or Stop barrier.
@@ -640,13 +644,19 @@ export const layer: Layer.Layer<
         const finalizedRun: OrchestrationV2Run = {
           ...runWithoutDelegatedCompletion,
           status: persistedStatus,
-          completedAt: input.terminal.status === "completed" ? null : completedAt,
+          completedAt:
+            input.terminal.status === "completed" && input.checkpointFilesystem
+              ? null
+              : completedAt,
         };
         const finalizedRootNode: OrchestrationV2ExecutionNode = {
           ...input.rootNode,
           status: persistedStatus,
-          completedAt: input.terminal.status === "completed" ? null : completedAt,
-          checkpointScopeId: input.checkpointScope.id,
+          completedAt:
+            input.terminal.status === "completed" && input.checkpointFilesystem
+              ? null
+              : completedAt,
+          checkpointScopeId: input.checkpointFilesystem ? input.checkpointScope.id : null,
         };
         const finalizedProviderThread: OrchestrationV2ProviderThread = {
           ...input.providerThread,
@@ -664,9 +674,10 @@ export const layer: Layer.Layer<
         // ahead of any later run's start on this thread's effect lane.
         const finalization = {
           effects:
-            input.terminal.status === "completed" ||
-            input.terminal.status === "interrupted" ||
-            input.terminal.status === "cancelled"
+            input.checkpointFilesystem &&
+            (input.terminal.status === "completed" ||
+              input.terminal.status === "interrupted" ||
+              input.terminal.status === "cancelled")
               ? [
                   {
                     id: `effect:checkpoint.capture:${input.run.id}`,
@@ -793,9 +804,14 @@ export const layer: Layer.Layer<
     return RunExecutionServiceV2.of({
       startRootRun: (input) =>
         Effect.gen(function* () {
+          const checkpointFilesystem =
+            input.session.providerSession.capabilities.checkpointing.appCanCheckpointFilesystem;
           // Startup failure and stream shutdown can report the same attempt.
           const refreshAfterTurn = yield* Effect.cached(
-            finalizationObserver.refreshAfterTurn(input.appThread.projectId).pipe(
+            (checkpointFilesystem
+              ? finalizationObserver.refreshAfterTurn(input.appThread.projectId)
+              : Effect.void
+            ).pipe(
               Effect.catchCause((cause) =>
                 Effect.logWarning("failed to refresh pull requests after run termination", {
                   threadId: input.run.threadId,
@@ -832,21 +848,22 @@ export const layer: Layer.Layer<
                     .responseStreamingMode,
               ),
             );
-            yield* checkpointService
-              .captureBaseline({
-                scope: input.checkpointScope,
-                ordinalWithinScope: Math.max(0, input.run.ordinal - 1),
-              })
-              .pipe(
-                Effect.catchCause((cause) =>
-                  Cause.hasInterruptsOnly(cause)
-                    ? Effect.failCause(cause)
-                    : Effect.logWarning(
-                        "orchestration V2 checkpoint baseline capture failed; starting provider without a baseline",
-                        { runId: input.run.id },
-                      ),
-                ),
-              );
+            if (checkpointFilesystem)
+              yield* checkpointService
+                .captureBaseline({
+                  scope: input.checkpointScope,
+                  ordinalWithinScope: Math.max(0, input.run.ordinal - 1),
+                })
+                .pipe(
+                  Effect.catchCause((cause) =>
+                    Cause.hasInterruptsOnly(cause)
+                      ? Effect.failCause(cause)
+                      : Effect.logWarning(
+                          "orchestration V2 checkpoint baseline capture failed; starting provider without a baseline",
+                          { runId: input.run.id },
+                        ),
+                  ),
+                );
             if (
               input.shouldStartProviderTurn !== undefined &&
               !(yield* input.shouldStartProviderTurn())
@@ -865,6 +882,7 @@ export const layer: Layer.Layer<
                   cause,
                 });
                 yield* writeFinalRunEvents({
+                  checkpointFilesystem,
                   run: input.run,
                   rootNode: input.rootNode,
                   checkpointScope: input.checkpointScope,
@@ -961,6 +979,7 @@ export const layer: Layer.Layer<
               const providerThread = yield* Ref.get(latestProviderThread);
               const openSubagents = yield* Ref.get(openRunOwnedSubagents);
               yield* writeFinalRunEvents({
+                checkpointFilesystem,
                 run: input.run,
                 rootNode: input.rootNode,
                 checkpointScope: input.checkpointScope,
@@ -1116,7 +1135,11 @@ export const layer: Layer.Layer<
             }
             const terminal = yield* Ref.get(terminalEvent);
             // Non-completed terminals drop background tracking immediately.
-            if (terminal !== null && terminal.status !== "completed") {
+            if (
+              terminal !== null &&
+              terminal.status !== "completed" &&
+              input.session.driver !== "kilo-cloud"
+            ) {
               return true;
             }
             const childProviderTurns = yield* Ref.get(activeChildProviderTurns);
@@ -1272,7 +1295,7 @@ export const layer: Layer.Layer<
                     cause,
                   }).pipe(
                     Effect.andThen(
-                      finalized
+                      finalized || input.session.driver === "kilo-cloud"
                         ? Effect.void
                         : Ref.get(latestProviderThread).pipe(
                             Effect.flatMap((providerThread) =>
@@ -1281,6 +1304,7 @@ export const layer: Layer.Layer<
                                   Ref.get(openRunOwnedSubagents).pipe(
                                     Effect.flatMap((openSubagents) =>
                                       writeFinalRunEvents({
+                                        checkpointFilesystem,
                                         run: input.run,
                                         rootNode: input.rootNode,
                                         checkpointScope: input.checkpointScope,
@@ -1346,6 +1370,7 @@ export const layer: Layer.Layer<
             runId: input.run.id,
             runOrdinal: input.run.ordinal,
             providerTurnOrdinal: input.providerTurnOrdinal,
+            ...(input.reattach ? { reattach: true } : {}),
             ...(input.run.restartContinuationOfRunId === undefined
               ? {}
               : {
@@ -1375,57 +1400,71 @@ export const layer: Layer.Layer<
             : input.session.startTurn(turnInput);
           yield* startTurn.pipe(
             Effect.catchCause((cause) =>
-              Effect.logError("orchestration V2 provider turn start failed", {
-                runId: input.run.id,
-                cause,
-              }).pipe(
-                Effect.andThen(Fiber.interrupt(providerEventFiber)),
-                Effect.andThen(Ref.get(latestProviderThread)),
-                Effect.flatMap((providerThread) =>
-                  Ref.get(latestTurnItemOrdinal).pipe(
-                    Effect.flatMap((latestItemOrdinal) =>
-                      Ref.get(openRunOwnedSubagents).pipe(
-                        Effect.flatMap((openSubagents) =>
-                          writeFinalRunEvents({
-                            run: input.run,
-                            rootNode: input.rootNode,
-                            checkpointScope: input.checkpointScope,
-                            providerThread,
-                            attempt: input.attempt,
-                            ...(input.shouldFinalizeRun === undefined
-                              ? {}
-                              : { shouldFinalizeRun: input.shouldFinalizeRun }),
-                            ...(input.hasUnpairedRunInterruptRequest === undefined
-                              ? {}
-                              : {
-                                  hasUnpairedRunInterruptRequest:
-                                    input.hasUnpairedRunInterruptRequest,
-                                }),
-                            openRunOwnedSubagents: openSubagents,
-                            terminal: makeFailedTerminalEvent(
-                              makeProviderFailure({
-                                cause: Cause.squash(cause),
-                                class: "provider_error",
+              input.session.driver === "kilo-cloud" &&
+              (input.reattach || Cause.hasInterruptsOnly(cause))
+                ? Fiber.interrupt(providerEventFiber).pipe(
+                    Effect.andThen(
+                      Effect.fail(
+                        new RunExecutionStartError({
+                          commandId: input.commandId,
+                          runId: input.run.id,
+                          cause,
+                        }),
+                      ),
+                    ),
+                  )
+                : Effect.logError("orchestration V2 provider turn start failed", {
+                    runId: input.run.id,
+                    cause,
+                  }).pipe(
+                    Effect.andThen(Fiber.interrupt(providerEventFiber)),
+                    Effect.andThen(Ref.get(latestProviderThread)),
+                    Effect.flatMap((providerThread) =>
+                      Ref.get(latestTurnItemOrdinal).pipe(
+                        Effect.flatMap((latestItemOrdinal) =>
+                          Ref.get(openRunOwnedSubagents).pipe(
+                            Effect.flatMap((openSubagents) =>
+                              writeFinalRunEvents({
+                                checkpointFilesystem,
+                                run: input.run,
+                                rootNode: input.rootNode,
+                                checkpointScope: input.checkpointScope,
+                                providerThread,
+                                attempt: input.attempt,
+                                ...(input.shouldFinalizeRun === undefined
+                                  ? {}
+                                  : { shouldFinalizeRun: input.shouldFinalizeRun }),
+                                ...(input.hasUnpairedRunInterruptRequest === undefined
+                                  ? {}
+                                  : {
+                                      hasUnpairedRunInterruptRequest:
+                                        input.hasUnpairedRunInterruptRequest,
+                                    }),
+                                openRunOwnedSubagents: openSubagents,
+                                terminal: makeFailedTerminalEvent(
+                                  makeProviderFailure({
+                                    cause: Cause.squash(cause),
+                                    class: "provider_error",
+                                  }),
+                                  latestItemOrdinal + 1,
+                                ),
+                                failureItemPersisted: false,
+                                refreshAfterTurn,
                               }),
-                              latestItemOrdinal + 1,
                             ),
-                            failureItemPersisted: false,
-                            refreshAfterTurn,
-                          }),
+                          ),
                         ),
                       ),
                     ),
+                    Effect.mapError(
+                      (writeCause) =>
+                        new RunExecutionStartError({
+                          commandId: input.commandId,
+                          runId: input.run.id,
+                          cause: { start: cause, write: writeCause },
+                        }),
+                    ),
                   ),
-                ),
-                Effect.mapError(
-                  (writeCause) =>
-                    new RunExecutionStartError({
-                      commandId: input.commandId,
-                      runId: input.run.id,
-                      cause: { start: cause, write: writeCause },
-                    }),
-                ),
-              ),
             ),
           );
         }),

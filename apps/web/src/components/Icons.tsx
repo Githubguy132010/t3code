@@ -1,3 +1,4 @@
+import { kiloIconPaths } from "@t3tools/client-runtime/kilo-icon";
 import React, { type SVGProps, useId } from "react";
 import { cn } from "~/lib/utils";
 export type Icon = React.FC<SVGProps<SVGSVGElement>>;
@@ -734,3 +735,11 @@ export const ComputerUseAppIcon: Icon = (props) => {
     </svg>
   );
 };
+
+export const KiloIcon: Icon = (props) => (
+  <svg viewBox="0 0 512 512" {...props}>
+    {kiloIconPaths.map((path) => (
+      <path key={path.d} {...path} />
+    ))}
+  </svg>
+);

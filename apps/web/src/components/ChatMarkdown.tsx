@@ -1417,6 +1417,7 @@ const CHAT_MARKDOWN_WORKSPACE_IMAGE_CLASS_NAME = cn(
   CHAT_MARKDOWN_MEDIA_LAYOUT_CLASS_NAME,
   CHAT_MARKDOWN_MEDIA_FRAME_CLASS_NAME,
 );
+export const ChatMarkdownLocalWorkspaceContext = React.createContext(true);
 const MarkdownLinkContext = React.createContext(false);
 
 function expandableMarkdownImageProps(
@@ -1658,8 +1659,23 @@ function ChatMarkdownVideo(props: {
   );
 }
 
+export const ChatMarkdownAssetImage = memo(function ChatMarkdownAssetImage(
+  props: ComponentProps<typeof LocalChatMarkdownAssetImage>,
+) {
+  const allowed = use(ChatMarkdownLocalWorkspaceContext);
+  return allowed ? (
+    <LocalChatMarkdownAssetImage {...props} />
+  ) : (
+    <ChatMarkdownImageFallback
+      alt={props.alt}
+      copyMarkdown={props.copyMarkdown ?? ""}
+      kind={props.kind ?? "image"}
+    />
+  );
+});
+
 /** Environment-hosted media loads through an exact-file signed asset URL. */
-export const ChatMarkdownAssetImage = memo(function ChatMarkdownAssetImage(props: {
+const LocalChatMarkdownAssetImage = memo(function LocalChatMarkdownAssetImage(props: {
   readonly environmentId: EnvironmentId;
   readonly resource: Extract<
     AssetResource,
@@ -2337,6 +2353,7 @@ function useChatMarkdownState({
   headingLevelOffset = 0,
   githubMedia = false,
 }: ChatMarkdownProps) {
+  const localWorkspaceEnabled = use(ChatMarkdownLocalWorkspaceContext);
   const { resolvedTheme } = useTheme();
   const [localMediaPreview, setLocalMediaPreview] = useState<ExpandedImagePreview | null>(null);
   const markdownRef = useRef<HTMLDivElement>(null);
@@ -2646,6 +2663,7 @@ function useChatMarkdownState({
   );
   const fileLinkChip = useCallback(
     (fileLinkMeta: MarkdownFileLinkMeta, copyMarkdown: string, mediaSource?: string) => {
+      if (!localWorkspaceEnabled) return <span>{fileLinkMeta.displayPath}</span>;
       const parentSuffix = fileLinkParentSuffixByPath.get(
         fileLinkMeta.filePath.replaceAll("\\", "/"),
       );
@@ -2706,6 +2724,7 @@ function useChatMarkdownState({
       );
     },
     [
+      localWorkspaceEnabled,
       canUseShellActions,
       fileLinkParentSuffixByPath,
       openFileInPanel,
@@ -3364,7 +3383,23 @@ function ChatMarkdown({
     markdownUrlTransform,
     localMediaPreview,
     setLocalMediaPreview,
-  } = useChatMarkdownState({ text, ...props });
+  } = useChatMarkdownState({
+    text,
+    ...props,
+    ...(!use(ChatMarkdownLocalWorkspaceContext)
+      ? {
+          cwd: undefined,
+          threadRef: undefined,
+          environmentId: undefined,
+          imageBaseDir: undefined,
+          pullRequestPanelRef: undefined,
+          renderContextReference: undefined,
+          onRunShellCommand: undefined,
+          onUseArtifactTemplate: undefined,
+          githubMedia: false,
+        }
+      : {}),
+  });
   const incrementalParsing =
     props.isStreaming === true &&
     extraRemarkPlugins.length === 0 &&

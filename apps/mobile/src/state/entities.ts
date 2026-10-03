@@ -96,3 +96,11 @@ const selectReportedModelSelection = (thread: EnvironmentThread | null) =>
 export function useThreadReportedModelSelection(ref: ScopedThreadRef) {
   return useAtomValue(environmentThreadDetails.threadAtom(ref), selectReportedModelSelection);
 }
+
+const selectCloudExecution = (thread: EnvironmentThread | null) =>
+  thread?.projection.providerThreads.find(
+    (providerThread) => providerThread.id === thread.projection.thread.activeProviderThreadId,
+  )?.nativeMetadata?.cloudExecution ?? null;
+export function useThreadCloudExecution(ref: ScopedThreadRef) {
+  return useAtomValue(environmentThreadDetails.threadAtom(ref), selectCloudExecution);
+}

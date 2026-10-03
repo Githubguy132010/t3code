@@ -81,6 +81,7 @@ type QuickActionIcon =
 
 /** The subset of git-control wiring the standalone git menu needs. */
 export type ThreadGitMenuProps = {
+  readonly gitControlsEnabled?: boolean;
   readonly environmentId: EnvironmentId | string;
   readonly threadId: ThreadId | string;
   readonly currentBranch: string | null;
@@ -112,13 +113,14 @@ type ThreadGitControlsProps = ThreadGitMenuProps & {
 
 function useThreadGitControlModel(props: ThreadGitMenuProps) {
   const navigation = useNavigation();
+  const enabled = props.gitControlsEnabled !== false;
   const environmentId = props.environmentId;
   const threadId = props.threadId;
   const { gitStatus, gitOperationLabel, onPull, onRunAction } = props;
 
   const currentBranchLabel = gitStatus?.refName ?? props.currentBranch ?? "Detached HEAD";
   const busy = gitOperationLabel !== null;
-  const isRepo = gitStatus?.isRepo ?? true;
+  const isRepo = enabled && (gitStatus?.isRepo ?? true);
   const hasPrimaryRemote = gitStatus?.hasPrimaryRemote ?? false;
   const isDefaultRef = gitStatus?.isDefaultRef ?? false;
 
@@ -163,6 +165,7 @@ function useThreadGitControlModel(props: ThreadGitMenuProps) {
 
   const runActionWithPrompt = useCallback(
     async (input: GitActionRequestInput) => {
+      if (!enabled) return;
       const confirmableAction =
         input.action === "push" ||
         input.action === "create_pr" ||
@@ -191,10 +194,11 @@ function useThreadGitControlModel(props: ThreadGitMenuProps) {
 
       await onRunAction(input);
     },
-    [environmentId, gitStatus, isDefaultRef, onRunAction, navigation, threadId],
+    [enabled, environmentId, gitStatus, isDefaultRef, onRunAction, navigation, threadId],
   );
 
   const runQuickAction = useCallback(async () => {
+    if (!enabled) return;
     if (quickAction.kind === "open_pr") {
       await openExistingPr();
       return;
@@ -206,9 +210,10 @@ function useThreadGitControlModel(props: ThreadGitMenuProps) {
     if (quickAction.kind === "run_action" && quickAction.action) {
       await runActionWithPrompt({ action: quickAction.action });
     }
-  }, [onPull, openExistingPr, quickAction, runActionWithPrompt]);
+  }, [enabled, onPull, openExistingPr, quickAction, runActionWithPrompt]);
 
   const openFiles = useCallback(() => {
+    if (!enabled) return;
     if (props.onOpenFilesInspector) {
       props.onOpenFilesInspector();
       return;
@@ -217,16 +222,18 @@ function useThreadGitControlModel(props: ThreadGitMenuProps) {
       environmentId: String(environmentId),
       threadId: String(threadId),
     });
-  }, [environmentId, props.onOpenFilesInspector, navigation, threadId]);
+  }, [enabled, environmentId, props.onOpenFilesInspector, navigation, threadId]);
 
   const openReview = useCallback(() => {
+    if (!enabled) return;
     navigation.navigate("ThreadReview", {
       environmentId: EnvironmentId.make(String(environmentId)),
       threadId: ThreadId.make(String(threadId)),
     });
-  }, [environmentId, navigation, threadId]);
+  }, [enabled, environmentId, navigation, threadId]);
 
   const openGitInspector = useCallback(() => {
+    if (!enabled) return;
     if (props.onOpenGitInspector) {
       props.onOpenGitInspector();
       return;
@@ -235,7 +242,7 @@ function useThreadGitControlModel(props: ThreadGitMenuProps) {
       environmentId: String(environmentId),
       threadId: String(threadId),
     });
-  }, [environmentId, props.onOpenGitInspector, navigation, threadId]);
+  }, [enabled, environmentId, props.onOpenGitInspector, navigation, threadId]);
 
   return {
     currentBranchLabel,
@@ -324,6 +331,7 @@ function useThreadGitHeaderActionItems(props: ThreadGitControlsProps): ThreadGit
       },
       git: {
         accessibilityLabel: "Git actions",
+        disabled: props.gitControlsEnabled === false,
         icon: { name: "point.topleft.down.curvedto.point.bottomright.up", type: "sfSymbol" },
         identifier: "thread-right-git",
         label: "Git",
@@ -396,6 +404,7 @@ function useThreadGitHeaderActionItems(props: ThreadGitControlsProps): ThreadGit
       props.canOpenFiles,
       props.canOpenTerminal,
       props.gitStatus,
+      props.gitControlsEnabled,
       props.onMergeBack,
       props.onOpenNewTerminal,
       props.onOpenTerminal,
@@ -409,16 +418,22 @@ function useThreadGitHeaderActionItems(props: ThreadGitControlsProps): ThreadGit
 export function useThreadGitRightHeaderItems(props: ThreadGitControlsProps): HeaderItems {
   const actionItems = useThreadGitHeaderActionItems(props);
   return useMemo(
-    () => [actionItems.git, actionItems.files, actionItems.terminal] as HeaderItems,
-    [actionItems],
+    () =>
+      props.gitControlsEnabled === false
+        ? []
+        : ([actionItems.git, actionItems.files, actionItems.terminal] as HeaderItems),
+    [actionItems, props.gitControlsEnabled],
   );
 }
 
 export function useThreadGitCenterHeaderItems(props: ThreadGitControlsProps): HeaderItems {
   const actionItems = useThreadGitHeaderActionItems(props);
   return useMemo(
-    () => [actionItems.files, actionItems.git, actionItems.terminal] as HeaderItems,
-    [actionItems],
+    () =>
+      props.gitControlsEnabled === false
+        ? []
+        : ([actionItems.files, actionItems.git, actionItems.terminal] as HeaderItems),
+    [actionItems, props.gitControlsEnabled],
   );
 }
 
@@ -426,7 +441,7 @@ export function ThreadGitControls(props: ThreadGitControlsProps) {
   const model = useThreadGitControlModel(props);
   const showActionControls = props.showActionControls ?? true;
 
-  if (!showActionControls) {
+  if (!showActionControls || props.gitControlsEnabled === false) {
     return null;
   }
 
@@ -523,7 +538,8 @@ export function ThreadGitMenu(props: ThreadGitMenuProps) {
 
 /** Returns menu data because native toolbars serialize direct items rather than rendering component children. */
 export function useThreadGitMenuDefinition(props: ThreadGitMenuProps): ScreenHeaderMenu | null {
-  return threadGitMenuDefinition(props, useThreadGitControlModel(props));
+  const model = useThreadGitControlModel(props);
+  return props.gitControlsEnabled === false ? null : threadGitMenuDefinition(props, model);
 }
 
 function threadGitMenuDefinition(

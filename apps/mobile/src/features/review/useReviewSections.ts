@@ -34,7 +34,8 @@ export function useReviewSections(input: {
   readonly reviewCache: ReviewCacheForThread;
 }) {
   const { environmentId, reviewCache, threadId } = input;
-  const enabled = input.enabled ?? true;
+  const { localWorkspaceEnabled } = useSelectedThreadWorktree();
+  const enabled = localWorkspaceEnabled && (input.enabled ?? true);
   const selectedThread = useSelectedThreadProjection();
   const { selectedThreadCwd } = useSelectedThreadWorktree();
   const diffPreview = useEnvironmentQuery(

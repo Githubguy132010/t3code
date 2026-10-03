@@ -796,6 +796,71 @@ export type OrchestrationV2PendingBackgroundTask = typeof OrchestrationV2Pending
 
 /** Provider and adapter metadata that should not overwrite the app thread's title. */
 export const OrchestrationV2ProviderThreadNativeMetadata = Schema.Struct({
+  cloudExecution: Schema.optional(
+    Schema.Struct({
+      result: Schema.optional(
+        Schema.Literals(["awaiting_result", "available", "unavailable", "cancelled"]),
+      ),
+      repository: Schema.String,
+      branch: Schema.String,
+      sessionId: Schema.NullOr(Schema.String),
+      worktreeId: Schema.NullOr(Schema.String),
+      task: Schema.Literals([
+        "not_started",
+        "admission_unknown",
+        "queued",
+        "running",
+        "completed",
+        "failed",
+        "interrupted",
+        "unknown",
+      ]),
+      sandbox: Schema.Literals([
+        "active",
+        "sleeping",
+        "starting",
+        "stopping",
+        "error",
+        "unreachable",
+        "unknown",
+      ]),
+      billing: Schema.Literals([
+        "idle",
+        "active",
+        "stopping",
+        "settling",
+        "unavailable",
+        "unknown",
+      ]),
+      billingAttribution: Schema.NullOr(Schema.Literals(["payer_shared", "session"])),
+      estimatedHourlyRateUsd: Schema.NullOr(Schema.Number),
+      observedAt: Schema.NullOr(IsoDateTime),
+    }),
+  ),
+  /** Native sessions may only be resumed within the account/configuration that created them. */
+  continuationKey: Schema.optional(TrimmedNonEmptyString),
+  /** Providers that copy history with fresh message IDs preserve durable turn boundaries here. */
+  messageAliases: Schema.optional(Schema.Record(Schema.String, Schema.String)),
+  /** Native user messages already have an app ID when submitted by T3. */
+  turnCorrelations: Schema.optional(
+    Schema.Record(
+      Schema.String,
+      Schema.Struct({
+        messageId: MessageId,
+        attachments: Schema.optional(Schema.Array(ChatAttachment)),
+        createdBy: Schema.optional(OrchestrationV2Actor),
+        creationSource: Schema.optional(OrchestrationV2CreationSource),
+        scheduledTaskId: Schema.optional(ScheduledTaskId),
+        senderThreadId: Schema.optional(ThreadId),
+        nodeId: NodeId,
+        runId: RunId,
+        attemptId: RunAttemptId,
+        ordinal: PositiveInt,
+        terminalStatus: Schema.optional(Schema.Literals(["completed", "failed", "interrupted"])),
+        completedAt: Schema.optional(TrimmedNonEmptyString),
+      }),
+    ),
+  ),
   /** Provider-reported selection for display, separate from the app's saved preferences. */
   modelSelection: Schema.optional(ModelSelection),
   title: Schema.optional(Schema.NullOr(TrimmedNonEmptyString)),

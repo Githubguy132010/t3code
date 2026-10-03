@@ -1,3 +1,4 @@
+import { useSelectedThreadWorktree } from "../../state/use-selected-thread-worktree";
 import { DEFAULT_TERMINAL_ID, EnvironmentId, ThreadId } from "@t3tools/contracts";
 import { type KnownTerminalSession } from "@t3tools/client-runtime/state/terminal";
 import { SymbolView } from "../../components/AppSymbol";
@@ -240,6 +241,20 @@ type ThreadTerminalRouteScreenProps = StaticScreenProps<{
 }>;
 
 export function ThreadTerminalRouteScreen(props: ThreadTerminalRouteScreenProps) {
+  const { localWorkspaceEnabled } = useSelectedThreadWorktree();
+  if (!localWorkspaceEnabled)
+    return (
+      <View className="flex-1 bg-screen">
+        <EmptyState
+          title="Terminal unavailable"
+          detail="This conversation has no local workspace."
+        />
+      </View>
+    );
+  return <LocalThreadTerminalRouteScreen {...props} />;
+}
+
+function LocalThreadTerminalRouteScreen(props: ThreadTerminalRouteScreenProps) {
   const insets = useSafeAreaInsets();
   const navigation = useNavigation();
   const writeTerminal = useAtomCommand(terminalEnvironment.write, "terminal write");

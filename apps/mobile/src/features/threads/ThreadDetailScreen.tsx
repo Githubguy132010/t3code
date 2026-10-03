@@ -1,4 +1,5 @@
-import { useThreadReportedModelSelection } from "../../state/entities";
+import { AppText } from "../../components/AppText";
+import { useThreadCloudExecution, useThreadReportedModelSelection } from "../../state/entities";
 import { UsageLimitRecoveryCard } from "./UsageLimitRecoveryCard";
 import { useNavigation } from "@react-navigation/native";
 import type { WorktreeSetupCardProps } from "./worktree-setup-card";
@@ -304,6 +305,10 @@ const USER_INPUT_TOGGLE_TIMING = {
 
 export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: ThreadDetailScreenProps) {
   const navigation = useNavigation();
+  const cloudExecution = useThreadCloudExecution({
+    environmentId: props.environmentId,
+    threadId: props.selectedThread.id,
+  });
   const reportedModelSelection = useThreadReportedModelSelection({
     environmentId: props.environmentId,
     threadId: props.selectedThread.id,
@@ -1264,6 +1269,27 @@ export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: Thread
                     : undefined
                 }
               >
+                {cloudExecution ? (
+                  <View className="px-3 py-2">
+                    <AppText>
+                      Kilo Cloud · {cloudExecution.repository} · {cloudExecution.branch}
+                    </AppText>
+                    <AppText>
+                      Last observation: {cloudExecution.observedAt ?? "unavailable"}. Task:{" "}
+                      {cloudExecution.task}.{" "}
+                      {cloudExecution.result ? `Result: ${cloudExecution.result}. ` : ""}Sandbox:{" "}
+                      {cloudExecution.sandbox}. Compute: {cloudExecution.billing}
+                      {cloudExecution.billingAttribution === "payer_shared"
+                        ? " (shared account)"
+                        : ""}
+                      .
+                    </AppText>
+                    <AppText>
+                      Remote repository. Closing T3 does not stop remote work or billing. Local
+                      files and checkpoints are unavailable.
+                    </AppText>
+                  </View>
+                ) : null}
                 {isProviderSubagent ? (
                   <View
                     className="self-center px-3 pt-1.5"

@@ -1272,3 +1272,134 @@ it.effect(
     }).pipe(Effect.provide(layer));
   },
 );
+
+it.effect(
+  "preserves remote work and deduplicates reattach while still cancelling local work",
+  () => {
+    const threadId = ThreadId.make("mixed-cloud-local");
+    const cloudThread = ProviderThreadId.make("remote-thread");
+    const localThread = ProviderThreadId.make("local-thread");
+    const cloudTurn = ProviderTurnId.make("remote-turn");
+    const localTurn = ProviderTurnId.make("local-turn");
+    const cloudRun = RunId.make("remote-run");
+    const localRun = RunId.make("local-run");
+    const cloudInstance = ProviderInstanceId.make("cloud-instance");
+    const localInstance = ProviderInstanceId.make("local-instance");
+    const projection = {
+      thread: { id: threadId, providerInstanceId: cloudInstance },
+      providerThreads: [
+        {
+          id: cloudThread,
+          driver: ProviderDriverKind.make("kilo-cloud"),
+          providerInstanceId: cloudInstance,
+        },
+        {
+          id: localThread,
+          driver: ProviderDriverKind.make("kilo"),
+          providerInstanceId: localInstance,
+        },
+      ],
+      providerSessions: [],
+      runs: [
+        {
+          id: cloudRun,
+          providerThreadId: cloudThread,
+          providerInstanceId: cloudInstance,
+          status: "running",
+          rootNodeId: null,
+          activeAttemptId: RunAttemptId.make("cloud-attempt"),
+        },
+        {
+          id: localRun,
+          providerThreadId: localThread,
+          providerInstanceId: localInstance,
+          status: "running",
+          rootNodeId: null,
+        },
+      ],
+      providerTurns: [
+        { id: cloudTurn, providerThreadId: cloudThread, status: "running" },
+        { id: localTurn, providerThreadId: localThread, status: "running" },
+      ],
+      runtimeRequests: [
+        {
+          id: RuntimeRequestId.make("remote-approval"),
+          providerTurnId: cloudTurn,
+          nodeId: NodeId.make("remote-node"),
+          status: "pending",
+          responseCapability: { type: "live" },
+        },
+      ],
+      attempts: [],
+      nodes: [],
+      subagents: [],
+      messages: [],
+      turnItems: [],
+    } as unknown as OrchestrationV2ThreadProjection;
+    const events: OrchestrationV2ThreadProjection["runs"][number][] = [];
+    const requests: string[] = [];
+    const pending: EffectOutbox.PendingOrchestrationEffectV2[] = [];
+    const record = (input: Parameters<EventSink.EventSinkV2["Service"]["writeWithEffects"]>[0]) => {
+      for (const event of input.events) {
+        if (event.type === "run.updated") events.push(event.payload);
+        if (event.type === "runtime-request.updated") requests.push(event.payload.id);
+      }
+      pending.push(...input.effects);
+    };
+    const layer = ProviderRuntimeRecovery.layer.pipe(
+      Layer.provide(ServerSettings.layerTest()),
+      Layer.provide(
+        Layer.mergeAll(
+          IdAllocator.layer,
+          Layer.mock(ProjectionStore.ProjectionStoreV2)({
+            getRecoveryThreadIds: () => Effect.succeed([threadId]),
+            getRuntimeRecoveryProjection: () => Effect.succeed(projection),
+          }),
+          Layer.mock(EventSink.EventSinkV2)({
+            writeWithEffects: (input) =>
+              Effect.sync(() => {
+                record(input);
+                return [] as never;
+              }),
+            commitCommand: (input) =>
+              Effect.sync(() => {
+                record({ events: input.events, effects: input.effects });
+                return { committed: true, cancelledEffectCount: 0 } as never;
+              }),
+          }),
+          Layer.mock(EffectWorker.OrchestrationEffectWorkerV2)({
+            runRecoveryOnce: Effect.succeed(false),
+          }),
+          Layer.mock(EffectOutbox.EffectOutboxV2)({
+            listByCommandId: (id) =>
+              Effect.sync(
+                () =>
+                  pending
+                    .filter((effect) => effect.commandId === id)
+                    .map((effect) => ({ ...effect, status: "pending" })) as never,
+              ),
+            reconcileAfterProcessLoss: Effect.succeed({ requeued: 0, cancelled: 0 }),
+            cancelUnsettled: () => Effect.succeed([]),
+            signalCancellations: () => Effect.void,
+          }),
+        ),
+      ),
+    );
+    return Effect.gen(function* () {
+      const service = yield* ProviderRuntimeRecovery.ProviderRuntimeRecoveryService;
+      yield* service.reconcile("shutdown");
+      assert.isTrue(events.some((run) => run.id === localRun && run.status === "cancelled"));
+      assert.isFalse(events.some((run) => run.id === cloudRun));
+      assert.equal(requests.length, 0);
+      yield* service.reconcile("startup");
+      yield* service.reconcile("startup");
+      assert.equal(
+        pending.filter((effect) => effect.request.type === "provider-turn.reattach").length,
+        1,
+      );
+      assert.isTrue(events.some((run) => run.id === cloudRun && run.status === "starting"));
+      assert.isFalse(events.some((run) => run.id === cloudRun && run.status === "cancelled"));
+      assert.equal(requests.length, 0);
+    }).pipe(Effect.provide(layer));
+  },
+);

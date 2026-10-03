@@ -149,6 +149,19 @@
       "name": "Expo text editor implementation",
       "noticeFile": "apps/mobile/modules/t3-composer-editor/LICENSE",
       "sourceUrl": "https://github.com/expo/expo"
+    },
+    {
+      "bundles": ["assets", "desktop", "web", "mobile"],
+      "license": "MIT",
+      "name": "Kilo Code icon",
+      "sourceUrl": "https://github.com/Kilo-Org/kilo/blob/v7.8.3/packages/kilo-vscode/assets/icons/kilo-light.svg",
+      "version": "7.8.3",
+      "generatedNotices": [
+        {
+          "licenseId": "MIT",
+          "copyrights": ["Copyright (c) 2026 Kilo Code", "Copyright (c) 2025 opencode"]
+        }
+      ]
     }
   ],
   "packageOverrides": [
@@ -598,6 +611,17 @@
       "generatedNotice": {
         "licenseId": "MIT",
         "copyrights": ["Copyright (c) 2015-present 650 Industries, Inc. (aka Expo)"]
+      }
+    },
+    {
+      "name": "@kilocode/sdk",
+      "version": "7.8.3",
+      "generatedNotice": {
+        "licenseId": "MIT",
+        "copyrights": ["Copyright (c) 2026 Kilo Code", "Copyright (c) 2025 opencode"],
+        "preamble": [
+          "License from Kilo-Org/kilo v7.8.3, commit 59f1428abb5fe782ee7bd4d258e72a08b74aadb4. The published SDK tarball omits the root LICENSE file."
+        ]
       }
     }
   ]

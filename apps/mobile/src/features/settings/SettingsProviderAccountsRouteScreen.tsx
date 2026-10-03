@@ -8,6 +8,7 @@ import { useRef, useState } from "react";
 import { Alert, Linking, Pressable, ScrollView, TextInput, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
+import { ProviderIcon } from "../../components/ProviderIcon";
 import { AppText as Text } from "../../components/AppText";
 import { ScreenScrollView } from "../../components/ScreenScrollView";
 import { useEnvironmentQuery } from "../../state/query";
@@ -43,18 +44,42 @@ export function SettingsProviderAccountsRouteScreen() {
                 {environment.serverConfig.providers
                   .filter(
                     (provider) =>
+                      provider.driver === "kilo-cloud" ||
+                      provider.driver === "kilo" ||
                       provider.setup?.canAuthenticate ||
                       (provider.driver === "acpRegistry" && provider.installed),
                   )
-                  .map((provider) => (
-                    <ProviderAccount
-                      key={provider.instanceId}
-                      environment={environment}
-                      provider={provider}
-                    />
-                  ))}
+                  .map((provider) =>
+                    provider.driver === "kilo" || provider.driver === "kilo-cloud" ? (
+                      <View
+                        key={provider.instanceId}
+                        className="gap-2 border-b border-border-subtle p-4"
+                      >
+                        <View className="flex-row items-center gap-2">
+                          <ProviderIcon provider="kilo" size={24} />
+                          <Text>{provider.displayName}</Text>
+                        </View>
+                        {provider.message ? (
+                          <Text className="text-foreground-muted">{provider.message}</Text>
+                        ) : null}
+                        <Text className="text-foreground-muted">
+                          {provider.driver === "kilo-cloud"
+                            ? "Kilo Cloud runs in a remote repository and uses Kilo credit. Closing T3 does not stop remote work or billing. Manage its account and repository in web or desktop Settings."
+                            : "Kilo runs on this environment and trusts native configuration, plugins and MCP servers. Tool approvals are not a sandbox. Manage its account profile in web or desktop Settings."}
+                        </Text>
+                      </View>
+                    ) : (
+                      <ProviderAccount
+                        key={provider.instanceId}
+                        environment={environment}
+                        provider={provider}
+                      />
+                    ),
+                  )}
                 {!environment.serverConfig.providers.some(
                   (provider) =>
+                    provider.driver === "kilo-cloud" ||
+                    provider.driver === "kilo" ||
                     provider.setup?.canAuthenticate ||
                     (provider.driver === "acpRegistry" && provider.installed),
                 ) ? (
@@ -174,7 +199,7 @@ function ProviderAccount({
   }
   return (
     <View className="border-b border-border-subtle">
-      <View className="gap-2 p-4">
+      <View className="gap-2 border-b border-border-subtle p-4">
         <Text className="text-lg font-semibold text-foreground">
           {provider.displayName ?? provider.driver}
         </Text>

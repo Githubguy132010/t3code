@@ -73,6 +73,7 @@ export interface ProviderTurnStartServiceV2Shape {
     readonly threadId: ThreadId;
     readonly runId: RunId;
     readonly willRetry?: boolean;
+    readonly reattach?: boolean;
   }) => Effect.Effect<void, ProviderTurnStartError>;
 }
 
@@ -217,6 +218,7 @@ export const layer: Layer.Layer<
       readonly threadId: ThreadId;
       readonly runId: RunId;
       readonly willRetry?: boolean;
+      readonly reattach?: boolean;
     }) {
       const { runId } = input;
       const projection = yield* projectionStore.getTurnStartContext(input.threadId, runId);
@@ -454,8 +456,33 @@ export const layer: Layer.Layer<
           return;
         }
       }
+      if (
+        providerThread.driver === "kilo-cloud" &&
+        (message.attachments.length > 0 ||
+          (message.context?.records.length ?? 0) > 0 ||
+          handoffs.length > 0 ||
+          nativeForkTransfer !== undefined)
+      ) {
+        yield* settleRunBeforeStart({
+          signal: "cloud-context-rejected",
+          status: "failed",
+          now: yield* DateTime.now,
+          providerInstanceId: run.providerInstanceId,
+          itemProviderThreadId: providerThread.id,
+          item: {
+            type: "error",
+            title: "Local context cannot be sent to Kilo Cloud",
+            failure: makeProviderFailure({
+              class: "validation_error",
+              message:
+                "Kilo Cloud does not accept local files, composer context, forks or handoff history. Send a plain prompt in a separate cloud thread.",
+            }),
+          },
+        });
+        return;
+      }
       const { worktreePath, branch } = projection.thread;
-      if (worktreePath !== null && branch !== null) {
+      if (providerThread.driver !== "kilo-cloud" && worktreePath !== null && branch !== null) {
         const exists = yield* fileSystem
           .exists(worktreePath)
           .pipe(Effect.orElseSucceed(() => true));
@@ -576,7 +603,8 @@ export const layer: Layer.Layer<
           });
         });
       if (sessionResult._tag === "Failure") {
-        if (input.willRetry === true) return yield* sessionResult.failure;
+        if (input.willRetry === true || input.reattach === true)
+          return yield* sessionResult.failure;
         yield* settleStartFailure({
           signal: "provider-session-open-failure",
           title: "Provider session failed to open",
@@ -593,7 +621,7 @@ export const layer: Layer.Layer<
         Effect.gen(function* () {
           const loaded = yield* Effect.result(load);
           if (loaded._tag === "Success") return loaded.success;
-          if (input.willRetry === true) return yield* loaded.failure;
+          if (input.willRetry === true || input.reattach === true) return yield* loaded.failure;
           yield* settleStartFailure({
             signal: "provider-thread-load-failure",
             title: "Provider turn failed to start",
@@ -1208,6 +1236,7 @@ export const layer: Layer.Layer<
           ? session
           : makeDeliverySession(session, startWithHandoffs);
       yield* runExecution.startRootRun({
+        ...(input.reattach ? { reattach: true } : {}),
         commandId: CommandId.make(`command:effect:provider-turn.start:${run.id}`),
         appThread: projection.thread,
         providerSessionId,

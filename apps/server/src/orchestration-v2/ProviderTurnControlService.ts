@@ -136,6 +136,14 @@ export const layer: Layer.Layer<
         }
         const session = yield* sessions.get(input.providerSessionId);
         if (Option.isNone(session)) {
+          if (providerThread.driver === "kilo-cloud")
+            return yield* new ProviderTurnControlError({
+              threadId: input.threadId,
+              operation: input.operation,
+              providerTurnId: input.providerTurnId,
+              cause:
+                "Kilo Cloud is disconnected. Reconnect to confirm remote interruption; the task and billing may still be active.",
+            });
           // Interrupt/restart against a already-released session must not fail
           // the durable effect (and retry 5x). The turn may still look running
           // in projection until recovery/finalization; there is no live adapter
