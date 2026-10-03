@@ -46,8 +46,10 @@ const inference = Effect.acquireRelease(
     const requests: Array<Record<string, unknown>> = [];
     const control: {
       mode: "text" | "approval" | "question" | "json" | "subagent" | "subagent-approval";
+      json: string;
     } = {
       mode: "text",
+      json: '{"title":"Local fixture title"}',
     };
     const server = NodeHttp.createServer((req, res) => {
       let body = "";
@@ -194,7 +196,7 @@ const inference = Effect.acquireRelease(
             `data: ${JSON.stringify({ id: "chatcmpl-local", object: "chat.completion.chunk", created: 0, model: "test", choices: [{ index: 0, delta: { reasoning_content: "Fixture reasoning." }, finish_reason: null }] })}\n\n`,
           );
         for (const text of control.mode === "json"
-          ? ['{"title":"Local fixture title"}']
+          ? [control.json]
           : ["Hello ", "from ", "local Kilo."])
           res.write(
             `data: ${JSON.stringify({
@@ -633,12 +635,56 @@ describe.runIf(binary !== undefined)("Kilo adapter with native runtime and local
           assert.isFalse(seen.slice(before).some((event) => event.type === "app_thread.created"));
         }
         model.control.mode = "json";
-        const generated = yield* KiloTextGeneration.make(runtime).generateThreadTitle({
+        const textGeneration = KiloTextGeneration.make(runtime);
+        const generated = yield* textGeneration.generateThreadTitle({
           cwd: root,
           modelSelection,
           message: "Name this test thread",
         });
         assert.equal(generated.title, "Local fixture title");
+        model.control.json = '{"branch":"  Local Kilo  "}';
+        const branch = yield* textGeneration.generateBranchName({
+          cwd: root,
+          modelSelection,
+          message: "Add the local Kilo provider",
+        });
+        assert.equal(branch.branch, "local-kilo");
+        model.control.json =
+          '{"subject":"feat: add local Kilo","body":"  Connect the native runtime.  ","branch":"local-kilo"}';
+        const commit = yield* textGeneration.generateCommitMessage({
+          cwd: root,
+          modelSelection,
+          branch: "main",
+          stagedSummary: "1 file changed",
+          stagedPatch: "+local Kilo provider",
+          includeBranch: true,
+        });
+        assert.deepEqual(commit, {
+          subject: "feat: add local Kilo",
+          body: "Connect the native runtime.",
+          branch: "feature/local-kilo",
+        });
+        model.control.json =
+          '{"title":"feat: add local Kilo","body":"  Add an isolated native runtime.  "}';
+        const pr = yield* textGeneration.generatePrContent({
+          cwd: root,
+          modelSelection,
+          baseBranch: "main",
+          headBranch: "local-kilo",
+          commitSummary: "feat: add local Kilo",
+          diffSummary: "1 file changed",
+          diffPatch: "+local Kilo provider",
+        });
+        assert.deepEqual(pr, {
+          title: "feat: add local Kilo",
+          body: "Add an isolated native runtime.",
+        });
+        // Native text may be valid JSON without satisfying the requested output schema.
+        // Reject it at the Kilo boundary rather than handing malformed results to T3.
+        const malformed = yield* textGeneration
+          .generateBranchName({ cwd: root, modelSelection, message: "Name the branch" })
+          .pipe(Effect.flip);
+        assert.equal(malformed.operation, "generateBranchName");
         model.control.mode = "text";
         const workspace = path.join(root, "integration-workspace");
         yield* fs.makeDirectory(workspace);
