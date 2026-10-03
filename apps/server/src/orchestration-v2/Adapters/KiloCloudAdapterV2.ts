@@ -355,7 +355,8 @@ export const make = Effect.fn("KiloCloudAdapterV2.make")(function* (options: {
                 status: "failed",
                 failure: makeProviderFailure({
                   class: "provider_error",
-                  code: "provider_error",
+                  code: resultFailure ? "kilo_cloud_result_unavailable" : "provider_error",
+                  ...(resultFailure ? { retryable: false } : {}),
                   message: resultFailure ?? "Kilo Cloud reported a failed task.",
                 }),
                 threadDisposition: "reusable",
@@ -1127,7 +1128,7 @@ export const make = Effect.fn("KiloCloudAdapterV2.make")(function* (options: {
                     ) ?? saved;
                   yield* finish(
                     saved.state,
-                    saved.resultStatus === "unavailable"
+                    saved.remoteState === "completed" && saved.state === "failed"
                       ? "Kilo Cloud completed remotely, but its result was unavailable before the recovery deadline."
                       : undefined,
                   );

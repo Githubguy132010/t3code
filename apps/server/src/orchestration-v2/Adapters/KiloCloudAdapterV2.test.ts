@@ -925,7 +925,9 @@ it.live(
       assert.isTrue(
         failure?.type === "turn.terminal" &&
           failure.status === "failed" &&
-          failure.failure?.message.includes("result could not be retrieved"),
+          failure.failure?.code === "kilo_cloud_result_unavailable" &&
+          failure.failure.retryable === false &&
+          failure.failure.message.includes("result could not be retrieved"),
       );
       remote.control.missingHistory = false;
       const late = yield* afterRestart.readThreadSnapshot({ providerThread: afterThread });

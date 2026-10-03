@@ -33,6 +33,9 @@ const decodeOwner = Schema.decodeUnknownEffect(
 const encodeJson = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
 const environment = {
   PATH: process.env.PATH,
+  // Fixtures import only Node builtins; do not let optional plugin package setup
+  // reach the registry or inherit an external npm configuration from HOME.
+  npm_config_offline: "true",
   HTTP_PROXY: process.env.HTTP_PROXY,
   HTTPS_PROXY: process.env.HTTPS_PROXY,
   NO_PROXY: process.env.NO_PROXY,
