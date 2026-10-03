@@ -81,6 +81,17 @@ export const readAuth = Effect.fn("KiloRuntime.readAuth")(function* (
   );
 });
 
+// No released runtime has a verified pre-connect MCP policy boundary. This gate
+// deliberately has no environment/config override. Restore execution only with
+// an audited dependency and real-process startup/reload/reconnect tests.
+export const localExecutionBlocked = new KiloRuntimeError({
+  operation: "runtime-safety",
+  detail:
+    "Local Kilo execution is disabled: CLI 7.8.3 can start MCP commands and connections before approval. A verified runtime fix is required.",
+});
+const requireSafeRuntime: Effect.Effect<void, KiloRuntimeError> =
+  Effect.fail(localExecutionBlocked);
+
 /** Every open owns a process. Registry replacement closes the old account's process scopes. */
 export const make = Effect.fn("KiloRuntime.make")(function* (input: {
   readonly instanceId: string;
@@ -146,6 +157,7 @@ export const make = Effect.fn("KiloRuntime.make")(function* (input: {
   // Readiness output can contain project/plugin diagnostics; never include it in client errors.
   return KiloRuntime.of({
     open: Effect.fn("KiloRuntime.open")(function* (directory) {
+      yield* requireSafeRuntime;
       if (closed)
         return yield* new KiloRuntimeError({
           operation: "open",

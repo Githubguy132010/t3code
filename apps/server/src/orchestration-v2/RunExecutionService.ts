@@ -1402,12 +1402,16 @@ export const layer: Layer.Layer<
             Effect.catchCause((cause) =>
               input.session.driver === "kilo-cloud" &&
               (input.reattach || Cause.hasInterruptsOnly(cause))
-                ? Effect.fail(
-                    new RunExecutionStartError({
-                      commandId: input.commandId,
-                      runId: input.run.id,
-                      cause,
-                    }),
+                ? Fiber.interrupt(providerEventFiber).pipe(
+                    Effect.andThen(
+                      Effect.fail(
+                        new RunExecutionStartError({
+                          commandId: input.commandId,
+                          runId: input.run.id,
+                          cause,
+                        }),
+                      ),
+                    ),
                   )
                 : Effect.logError("orchestration V2 provider turn start failed", {
                     runId: input.run.id,

@@ -162,7 +162,7 @@ export const KiloDriver: ProviderDriver<KiloSettings, KiloDriverEnv> = {
           version: null,
           status: "warning",
           auth: { status: "unknown", profileId: input.config.accountId },
-          message: "Kilo has not been checked yet.",
+          message: KiloRuntime.localExecutionBlocked.message,
         },
       }),
     );
@@ -254,8 +254,7 @@ export const KiloDriver: ProviderDriver<KiloSettings, KiloDriverEnv> = {
               ...latest,
               status: "error" as const,
               installed: false,
-              message:
-                "Kilo could not be checked. Verify the binary, profile and CLI version 7.8.3.",
+              message: KiloRuntime.localExecutionBlocked.message,
             }),
           ),
         );

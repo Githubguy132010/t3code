@@ -43,6 +43,8 @@ const fixture = Effect.acquireRelease(
     });
     const control = {
       status: "completed",
+      dropNextPrepare: false,
+      omittedItemCount: 0,
       missingHistory: false,
       incompleteHistory: false,
       interruptAccepted: false,
@@ -92,8 +94,21 @@ const fixture = Effect.acquireRelease(
             messages: [{ id: input.initialMessageId!, prompt: input.prompt! }],
           };
           conversations.set(state.cloud, state);
+          if (control.dropNextPrepare) {
+            control.dropNextPrepare = false;
+            response.destroy();
+            return;
+          }
           return reply({ cloudAgentSessionId: state.cloud, kiloSessionId: state.native });
         }
+        if (operation === "cliSessionsV2.list")
+          return reply({
+            cliSessions: [...conversations.values()].map((state) => ({
+              session_id: state.native,
+              cloud_agent_session_id: state.cloud,
+            })),
+            nextCursor: null,
+          });
         const state = [...conversations.values()].find(
           (item) => item.cloud === input.cloudAgentSessionId || item.native === input.session_id,
         );
@@ -174,6 +189,20 @@ const fixture = Effect.acquireRelease(
                 ]
               : [],
           });
+        if (operation === "cloudAgentNext.getSandboxStatus")
+          return reply({
+            status: control.status === "running" ? "active" : "sleeping",
+            observedAt: 1,
+            inactivityTimeoutMs: null,
+            estimatedSleepAt: null,
+          });
+        if (operation === "cloudAgentNext.getComputeBillingStatus")
+          return reply({
+            phase: control.status === "running" ? "active" : "idle",
+            attribution: "session",
+            estimatedHourlyRateMicrodollars: 0,
+            estimatedIntervalAmountMicrodollars: 0,
+          });
         if (operation === "cloudAgentNext.getMessageResult")
           return reply({
             cloudAgentSessionId: state.cloud,
@@ -188,7 +217,7 @@ const fixture = Effect.acquireRelease(
             watermarkEventId: 3,
             history: {
               nextCursor: null,
-              omittedItemCount: 0,
+              omittedItemCount: control.omittedItemCount,
               messages: state.messages.flatMap((message) => [
                 {
                   info: {
@@ -260,6 +289,7 @@ it.live(
   () =>
     Effect.gen(function* () {
       const remote = yield* fixture;
+      remote.control.dropNextPrepare = true;
       const fs = yield* FileSystem.FileSystem;
       const directory = yield* fs.makeTempDirectoryScoped();
       const journal = yield* Journal.make(directory);
@@ -472,10 +502,17 @@ it.live(
       const questionResolved = yield* Deferred.make<void>();
       const resolvedItems: Array<Adapter.ProviderAdapterV2Event> = [];
       const failedWithoutHistory = yield* Deferred.make<void>();
+      const failedAndSleeping = yield* Deferred.make<void>();
       yield* restored.events.pipe(
         Stream.runForEach((event) =>
           Effect.gen(function* () {
             resolvedItems.push(event);
+            if (
+              event.type === "provider_thread.updated" &&
+              event.providerThread.nativeMetadata?.cloudExecution?.task === "failed" &&
+              event.providerThread.nativeMetadata.cloudExecution.sandbox === "sleeping"
+            )
+              yield* Deferred.succeed(failedAndSleeping, undefined);
             if (
               event.type === "turn_item.updated" &&
               event.turnItem.type === "user_input_request" &&
@@ -598,7 +635,7 @@ it.live(
       assert.include(denied.message, "Paid cloud execution is disabled");
       assert.equal(remote.submissions(), 2);
       remote.control.status = "failed";
-      remote.control.missingHistory = true;
+      remote.control.omittedItemCount = 1;
       yield* restored.startTurn({
         ...restore,
         reattach: false,
@@ -614,6 +651,8 @@ it.live(
         },
       });
       yield* Deferred.await(failedWithoutHistory);
+      yield* Deferred.await(failedAndSleeping);
+      assert.isFalse(yield* restored.hasPendingBackgroundWork!);
       assert.equal((yield* journal.read).at(-1)?.state, "failed");
       assert.equal(remote.submissions(), 2);
       const first = (yield* journal.read)[0]!;

@@ -87,16 +87,19 @@ describe("Kilo customer Cloud Agent boundary", () => {
     expect(failure.messageId).toBe(messageId);
     expect(accepted).toBe(1);
   });
-  it.each([500, 503, 307])("never follows or retries mutation status %i", async (status) => {
-    let requests = 0;
-    const cloud = await client((_request, response) => {
-      requests++;
-      response.writeHead(status, { location: "/other" });
-      response.end();
-    });
-    expect((await run(cloud.start(start).pipe(Effect.flip))).reason).toBe("admission_unknown");
-    expect(requests).toBe(1);
-  });
+  it.each([408, 409, 500, 503, 307])(
+    "never follows or retries mutation status %i",
+    async (status) => {
+      let requests = 0;
+      const cloud = await client((_request, response) => {
+        requests++;
+        response.writeHead(status, { location: "/other" });
+        response.end();
+      });
+      expect((await run(cloud.start(start).pipe(Effect.flip))).reason).toBe("admission_unknown");
+      expect(requests).toBe(1);
+    },
+  );
   it("rejects a mismatched session on send and a mismatched message on result", async () => {
     const cloud = await client((request, response) =>
       json(

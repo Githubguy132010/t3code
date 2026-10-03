@@ -74,6 +74,7 @@ export const KiloCloudDriver: ProviderDriver<KiloCloudSettings, KiloCloudDriverE
             displayName: "Kilo Cloud",
             badgeLabel: "Preview",
             supportsConversationRollback: false,
+            showInteractionModeToggle: false,
             supportedRuntimeModes: ["full-access"],
           },
           checkedAt,
@@ -141,14 +142,18 @@ export const KiloCloudDriver: ProviderDriver<KiloCloudSettings, KiloCloudDriverE
         snapshot: {
           getSnapshot: Effect.sync(() => snapshot),
           refresh: Effect.gen(function* () {
-            const current = yield* account.load.pipe(Effect.orElseSucceed(() => null));
-            if (current?.accountId === credentials.accountId) snapshot = authenticatedSnapshot;
+            const current = yield* account.load.pipe(Effect.result);
+            if (current._tag === "Success" && current.success.accountId === credentials.accountId)
+              snapshot = authenticatedSnapshot;
             else {
+              const temporarilyUnavailable =
+                current._tag === "Failure" && current.failure.reason === "invalid_response";
               snapshot = {
                 ...snapshot,
                 status: "error",
-                message:
-                  "Kilo login changed or is unavailable. Reconfigure this cloud account; existing remote tasks may still be running.",
+                message: temporarilyUnavailable
+                  ? "Kilo account verification is temporarily unavailable. Retry later; existing remote tasks may still be running."
+                  : "Kilo login changed or is unavailable. Reconfigure this cloud account; existing remote tasks may still be running.",
               };
             }
             yield* PubSub.publish(changes, snapshot);

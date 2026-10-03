@@ -36,7 +36,8 @@ export function useSelectedThreadGitActions() {
   const createWorktree = useAtomCommand(vcsEnvironment.createWorktree, { reportFailure: false });
   const pull = useAtomCommand(vcsEnvironment.pull, { reportFailure: false });
   const { selectedThread, selectedThreadProject } = useThreadSelection();
-  const { selectedThreadCwd, selectedThreadWorktreePath } = useSelectedThreadWorktree();
+  const { selectedThreadCwd, selectedThreadWorktreePath, selectedThreadGitRootCwd } =
+    useSelectedThreadWorktree();
   const runStackedAction = useAtomCommand(
     vcsActionManager.runStackedAction({
       environmentId: selectedThread?.environmentId ?? null,
@@ -45,7 +46,6 @@ export function useSelectedThreadGitActions() {
     { reportFailure: false },
   );
 
-  const selectedThreadGitRootCwd = selectedThreadProject?.workspaceRoot ?? null;
   const branchTarget = useMemo(
     () => ({
       environmentId: selectedThread?.environmentId ?? null,
@@ -77,7 +77,7 @@ export function useSelectedThreadGitActions() {
 
   const refreshSelectedThreadGitStatus = useCallback(
     async (options?: { readonly quiet?: boolean; readonly cwd?: string | null }) => {
-      if (!selectedThread || !selectedThreadProject) {
+      if (!selectedThread || !selectedThreadProject || !selectedThreadCwd) {
         return null;
       }
 
@@ -116,7 +116,7 @@ export function useSelectedThreadGitActions() {
   );
 
   useEffect(() => {
-    if (!selectedThread || !selectedThreadProject) {
+    if (!selectedThread || !selectedThreadProject || !selectedThreadCwd) {
       return;
     }
     void refreshSelectedThreadGitStatus({ quiet: true });

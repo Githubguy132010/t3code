@@ -351,7 +351,7 @@ function useThreadFilesWorkspace(params: {
   const routeCwd = firstRouteParam(params.cwd);
   const routeProjectName = firstRouteParam(params.projectName);
   const { selectedThread, selectedThreadProject } = useThreadSelection();
-  const { selectedThreadCwd } = useSelectedThreadWorktree();
+  const { selectedThreadCwd, localWorkspaceEnabled } = useSelectedThreadWorktree();
   const environmentId =
     routeEnvironmentId !== null
       ? EnvironmentId.make(routeEnvironmentId)
@@ -363,7 +363,12 @@ function useThreadFilesWorkspace(params: {
   } | null;
 
   return {
-    cwd: routeCwd ?? selectedThreadCwd ?? project?.workspaceRoot ?? null,
+    cwd:
+      routeThreadId !== null
+        ? localWorkspaceEnabled
+          ? selectedThreadCwd
+          : null
+        : (routeCwd ?? project?.workspaceRoot ?? null),
     environmentId,
     projectName: routeProjectName ?? project?.title ?? "Files",
     selectedThread,

@@ -73,6 +73,152 @@ function json(response: NodeHttp.ServerResponse, data: unknown) {
   response.end(JSON.stringify({ result: { data } }));
 }
 describe("Kilo personal Cloud control-plane customer API", () => {
+  it("continues an uncertain-admission scan across read budgets and cursor pages without resubmitting", async () => {
+    const reads: string[] = [];
+    const cursors: Array<string | null> = [];
+    const candidates = Array.from({ length: 101 }, (_, index) => ({
+      session_id: `ses_candidate${index}`,
+      cloud_agent_session_id: `workspace_12345678-1234-1234-1234-${String(index).padStart(12, "0")}`,
+    }));
+    const { client } = await server((req, res) => {
+      expect(req.method).toBe("GET");
+      const url = new URL(req.url!, "http://localhost");
+      const input = JSON.parse(url.searchParams.get("input")!) as Record<string, string>;
+      if (url.pathname.endsWith("cliSessionsV2.list")) {
+        cursors.push(input.cursor ?? null);
+        expect(input.organizationId).toBeNull();
+        return json(res, {
+          cliSessions: input.cursor ? candidates.slice(100) : candidates.slice(0, 100),
+          nextCursor: input.cursor ? null : "2026-10-01T00:00:00.000Z",
+        });
+      }
+      const candidate = candidates.find(
+        (item) => item.cloud_agent_session_id === input.cloudAgentSessionId,
+      )!;
+      reads.push(candidate.session_id);
+      return json(res, {
+        ...session,
+        sessionId: candidate.cloud_agent_session_id,
+        kiloSessionId: candidate.session_id,
+        initialMessageId:
+          candidate === candidates[100] ? messageId : "msg_00000000000000000000000000",
+      });
+    });
+    for (let index = 0; index < 4; index++)
+      expect(await run(client.findAdmission(binding.repository, messageId))).toBeNull();
+    expect(await run(client.findAdmission(binding.repository, messageId))).toEqual({
+      cloudAgentSessionId: candidates[100]!.cloud_agent_session_id,
+      kiloSessionId: candidates[100]!.session_id,
+    });
+    expect(reads).toHaveLength(101);
+    expect(new Set(reads).size).toBe(101);
+    expect(cursors).toEqual([null, "2026-10-01T00:00:00.000Z"]);
+  });
+  it("does not let a transient or deleted candidate starve a later personal session", async () => {
+    const reads: string[] = [];
+    const missing = "workspace_00000000-0000-0000-0000-000000000000";
+    let first = true;
+    const { client } = await server((req, res) => {
+      const url = new URL(req.url!, "http://localhost");
+      const input = JSON.parse(url.searchParams.get("input")!) as Record<string, string>;
+      if (url.pathname.endsWith("cliSessionsV2.list"))
+        return json(res, {
+          cliSessions: [
+            { session_id: "ses_deleted", cloud_agent_session_id: missing },
+            { session_id: session.kiloSessionId, cloud_agent_session_id: session.sessionId },
+          ],
+          nextCursor: null,
+        });
+      reads.push(input.cloudAgentSessionId!);
+      if (input.cloudAgentSessionId === missing) {
+        res.writeHead(first ? 503 : 404);
+        first = false;
+        res.end();
+        return;
+      }
+      return json(res, session);
+    });
+    expect(await run(client.findAdmission(binding.repository, messageId))).toBeNull();
+    expect(await run(client.findAdmission(binding.repository, messageId))).toEqual({
+      cloudAgentSessionId: session.sessionId,
+      kiloSessionId: session.kiloSessionId,
+    });
+    expect(reads).toEqual([missing, session.sessionId, missing]);
+  });
+  it("searches later pages despite a persistently unavailable candidate and waits before binding", async () => {
+    let unavailable = true;
+    let pageTwoRead = false;
+    const missing = "workspace_00000000-0000-0000-0000-000000000000";
+    const { client } = await server((req, res) => {
+      const url = new URL(req.url!, "http://localhost");
+      const input = JSON.parse(url.searchParams.get("input")!) as Record<string, string>;
+      if (url.pathname.endsWith("cliSessionsV2.list")) {
+        if (input.cursor) pageTwoRead = true;
+        return json(
+          res,
+          input.cursor
+            ? {
+                cliSessions: [
+                  { session_id: session.kiloSessionId, cloud_agent_session_id: session.sessionId },
+                ],
+                nextCursor: null,
+              }
+            : {
+                cliSessions: [{ session_id: "ses_unavailable", cloud_agent_session_id: missing }],
+                nextCursor: "2026-10-01T00:00:00.000Z",
+              },
+        );
+      }
+      if (input.cloudAgentSessionId === missing) {
+        res.writeHead(unavailable ? 503 : 404);
+        res.end();
+        return;
+      }
+      return json(res, session);
+    });
+    expect(await run(client.findAdmission(binding.repository, messageId))).toBeNull();
+    expect(pageTwoRead).toBe(true);
+    expect(await run(client.findAdmission(binding.repository, messageId))).toBeNull();
+    unavailable = false;
+    expect(await run(client.findAdmission(binding.repository, messageId))).toEqual({
+      cloudAgentSessionId: session.sessionId,
+      kiloSessionId: session.kiloSessionId,
+    });
+  });
+  it("rejects ambiguous admission identities and repeating cursors without a mutation", async () => {
+    let repeated = false;
+    const { client } = await server((req, res) => {
+      expect(req.method).toBe("GET");
+      const url = new URL(req.url!, "http://localhost");
+      if (url.pathname.endsWith("cliSessionsV2.list"))
+        return json(res, {
+          cliSessions: repeated
+            ? []
+            : [
+                { session_id: session.kiloSessionId, cloud_agent_session_id: session.sessionId },
+                {
+                  session_id: "ses_second",
+                  cloud_agent_session_id: "workspace_00000000-0000-0000-0000-000000000000",
+                },
+              ],
+          nextCursor: repeated ? "2026-10-01T00:00:00.000Z" : null,
+        });
+      const input = JSON.parse(url.searchParams.get("input")!) as Record<string, string>;
+      return json(res, {
+        ...session,
+        sessionId: input.cloudAgentSessionId,
+        kiloSessionId:
+          input.cloudAgentSessionId === session.sessionId ? session.kiloSessionId : "ses_second",
+      });
+    });
+    expect(
+      (await run(client.findAdmission(binding.repository, messageId).pipe(Effect.flip))).reason,
+    ).toBe("wrong_owner");
+    repeated = true;
+    expect(
+      (await run(client.findAdmission(binding.repository, messageId).pipe(Effect.flip))).reason,
+    ).toBe("invalid_response");
+  });
   it("authenticates a customer WebSocket, resumes its cursor and rejects a foreign session event", async () => {
     const expiresAt = await run(Clock.currentTimeMillis);
     const { client, httpServer } = await server((req, res) => {
@@ -127,6 +273,7 @@ describe("Kilo personal Cloud control-plane customer API", () => {
     );
     expect(received).toEqual([38]);
     expect(error.operation).toBe("events");
+    expect(error.reason).toBe("wrong_owner");
   });
   it.each([
     "varCount",

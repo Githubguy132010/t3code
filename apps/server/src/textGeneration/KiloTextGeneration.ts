@@ -5,8 +5,12 @@ import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import { resolveAttachmentPath } from "../attachmentStore.ts";
 import { toOpenCodeFileParts } from "../provider/opencodeRuntime.ts";
-import type * as KiloRuntime from "../provider/kilo/KiloRuntime.ts";
+import * as KiloRuntime from "../provider/kilo/KiloRuntime.ts";
 import { makeOpenCodeOperations, type OpenCodeJsonRunner } from "./OpenCodeTextGeneration.ts";
+
+const isKiloRuntimeError = Schema.is(KiloRuntime.KiloRuntimeError);
+
+const isTextGenerationError = Schema.is(TextGenerationError);
 
 /** Only prompt construction is shared. Protocol, credentials and lifetime belong to Kilo. */
 export function make(runtime: KiloRuntime.KiloRuntime["Service"], attachmentsDir?: string) {
@@ -56,12 +60,16 @@ export function make(runtime: KiloRuntime.KiloRuntime["Service"], attachmentsDir
       );
     }).pipe(
       Effect.scoped,
-      Effect.mapError(
-        () =>
-          new TextGenerationError({
-            operation: input.operation,
-            detail: "Kilo text generation failed. The request was not retried.",
-          }),
+      Effect.mapError((cause) =>
+        isTextGenerationError(cause)
+          ? cause
+          : new TextGenerationError({
+              operation: input.operation,
+              detail: isKiloRuntimeError(cause)
+                ? cause.message
+                : "Kilo text generation failed. The request was not retried.",
+              cause,
+            }),
       ),
     );
   return makeOpenCodeOperations(run);

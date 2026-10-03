@@ -10,6 +10,9 @@ import * as NodeUtil from "node:util";
 import { chromium } from "playwright-core";
 
 if (!process.env.KILO_BIN) throw new Error("KILO_BIN must point to the pinned local CLI");
+const verifyBlocked = process.env.KILO_VERIFY_BLOCKED === "1";
+if (verifyBlocked && process.env.KILO_CLOUD_TEST_PROFILE)
+  throw new Error("Blocked-runtime verification must use no live cloud profile");
 const root = NodePath.resolve(import.meta.dirname, "../../..");
 const temporary = await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "t3-kilo-ui-"));
 const evidence = process.env.KILO_EVIDENCE_DIR ?? NodePath.join(temporary, "evidence");
@@ -195,48 +198,58 @@ try {
   await page.getByText("Local folder", { exact: true }).click();
   await page.getByPlaceholder("Enter path (e.g. ~/projects/my-app)").fill(workspace);
   await page.getByPlaceholder("Enter path (e.g. ~/projects/my-app)").press("Enter");
-  if (process.env.KILO_CLOUD_TEST_PROFILE) {
+  if (!verifyBlocked) {
+    if (process.env.KILO_CLOUD_TEST_PROFILE) {
+      await page.locator("[data-chat-provider-model-picker-label]").click();
+      await page.getByPlaceholder("Search models...").fill("deepseek-v4.1-flash");
+      await page.getByText("deepseek/deepseek-v4.1-flash", { exact: true }).last().click();
+      await page
+        .getByText("Closing T3 does not stop remote work or billing.", { exact: false })
+        .waitFor();
+      await page.getByRole("button", { name: "Unknown", exact: true }).click();
+      await page.getByRole("menuitemradio", { name: /^Low/ }).click();
+      await page.getByRole("button", { name: "Low", exact: true }).waitFor();
+      await page.screenshot({
+        animations: "disabled",
+        path: NodePath.join(evidence, "cloud-before-send.png"),
+      });
+    }
     await page.locator("[data-chat-provider-model-picker-label]").click();
-    await page.getByPlaceholder("Search models...").fill("deepseek-v4.1-flash");
-    await page.getByText("deepseek/deepseek-v4.1-flash", { exact: true }).last().click();
-    await page
-      .getByText("Closing T3 does not stop remote work or billing.", { exact: false })
-      .waitFor();
-    await page.getByRole("button", { name: "Unknown", exact: true }).click();
-    await page.getByRole("menuitemradio", { name: /^Low/ }).click();
-    await page.getByRole("button", { name: "Low", exact: true }).waitFor();
+    await page.getByPlaceholder("Search models...").fill("Local fixture");
+    await page.getByText("Local fixture", { exact: true }).last().click();
+    await page.getByRole("button", { name: "Local fixture", exact: true }).waitFor();
+    await page.locator("[contenteditable=true]").fill("Kilo local integration: say hello.");
     await page.screenshot({
       animations: "disabled",
-      path: NodePath.join(evidence, "cloud-before-send.png"),
+      path: NodePath.join(evidence, "before-send.png"),
     });
+    await page.getByRole("button", { name: "Submit message", exact: true }).click();
+    await page.getByText(answer, { exact: true }).waitFor({ timeout: 60000 });
+    await page.screenshot({
+      animations: "disabled",
+      path: NodePath.join(evidence, "streamed-answer.png"),
+    });
+    await page.getByRole("button", { name: "Submit message", exact: true }).waitFor();
+    await page.screenshot({
+      animations: "disabled",
+      path: NodePath.join(evidence, "completed-answer.png"),
+    });
+    console.log("Local native answer rendered; opening provider settings.");
   }
-  await page.locator("[data-chat-provider-model-picker-label]").click();
-  await page.getByPlaceholder("Search models...").fill("Local fixture");
-  await page.getByText("Local fixture", { exact: true }).last().click();
-  await page.getByRole("button", { name: "Local fixture", exact: true }).waitFor();
-  await page.locator("[contenteditable=true]").fill("Kilo local integration: say hello.");
-  await page.screenshot({
-    animations: "disabled",
-    path: NodePath.join(evidence, "before-send.png"),
-  });
-  await page.getByRole("button", { name: "Submit message", exact: true }).click();
-  await page.getByText(answer, { exact: true }).waitFor({ timeout: 60000 });
-  await page.screenshot({
-    animations: "disabled",
-    path: NodePath.join(evidence, "streamed-answer.png"),
-  });
-  await page.getByRole("button", { name: "Submit message", exact: true }).waitFor();
-  await page.screenshot({
-    animations: "disabled",
-    path: NodePath.join(evidence, "completed-answer.png"),
-  });
-  console.log("Local native answer rendered; opening provider settings.");
   await page.getByRole("button", { name: "Settings", exact: true }).click();
   await page.waitForURL("**/settings/general*");
   await page.getByText("Restore device defaults", { exact: true }).waitFor();
   await page.getByRole("button", { name: "Providers", exact: true }).click();
   await page.waitForURL("**/settings/providers*");
   await page.getByRole("button", { name: "Add provider", exact: true }).waitFor();
+  if (verifyBlocked) {
+    await page.getByRole("button", { name: "Select Kilo", exact: true }).click();
+    await page.getByText("Local Kilo execution is disabled:", { exact: false }).waitFor();
+    await page.screenshot({
+      animations: "disabled",
+      path: NodePath.join(evidence, "local-execution-blocked.png"),
+    });
+  }
   await page.getByRole("button", { name: "Select Kilo Cloud", exact: true }).click();
   if (process.env.KILO_CLOUD_TEST_PROFILE) {
     const consent = page.getByRole("switch", { name: "Allow paid cloud execution", exact: true });
@@ -260,13 +273,16 @@ try {
     path: NodePath.join(evidence, "provider-settings.png"),
   });
   await context.close();
-  if (!requests) throw new Error("The real CLI did not contact the local inference fixture");
+  if (verifyBlocked && requests !== 0) throw new Error("Blocked execution reached inference");
+  if (!verifyBlocked && !requests)
+    throw new Error("The real CLI did not contact the local inference fixture");
   await NodeFSP.writeFile(
     NodePath.join(evidence, "verification.json"),
     JSON.stringify(
       {
         commit: (await execFile("git", ["rev-parse", "HEAD"], { cwd: root })).stdout.trim(),
         inferenceRequests: requests,
+        localExecutionBlocked: verifyBlocked,
         inference: "loopback fixture only",
         client: "Chromium web",
       },

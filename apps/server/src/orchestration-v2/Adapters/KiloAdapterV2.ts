@@ -18,6 +18,7 @@ import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
+import * as Schema from "effect/Schema";
 import * as Queue from "effect/Queue";
 import * as Semaphore from "effect/Semaphore";
 import * as Stream from "effect/Stream";
@@ -37,6 +38,10 @@ import {
 import { openCodePermissionRules } from "./OpenCodeAdapterV2.ts";
 import { getModelSelectionStringOptionValue } from "@t3tools/shared/model";
 import { openCodeToolTurnItem } from "./OpenCodeToolItems.ts";
+
+const isKiloRuntimeError = Schema.is(KiloRuntime.KiloRuntimeError);
+
+const isKiloSessionError = Schema.is(KiloSessionError);
 
 export const KILO_PROVIDER = ProviderDriverKind.make("kilo");
 
@@ -140,7 +145,20 @@ const nativeRef = (nativeId: string) => ({
   strength: "strong" as const,
 });
 const wire = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
-  effect.pipe(Effect.mapError(() => error("Kilo request failed; the operation was not retried")));
+  effect.pipe(
+    Effect.mapError(
+      (cause) =>
+        new Adapter.ProviderAdapterProtocolError({
+          driver: KILO_PROVIDER,
+          // These typed messages contain no raw transport responses or credentials.
+          detail:
+            isKiloRuntimeError(cause) || isKiloSessionError(cause)
+              ? cause.message
+              : "Kilo request failed; the operation was not retried",
+          cause,
+        }),
+    ),
+  );
 
 // Kilo 7.8.3 task.ts persists inherited edit/bash/MCP ceilings before launching a child.
 const permissions = (policy: Adapter.ProviderAdapterV2RuntimePolicy) => {
@@ -1006,7 +1024,15 @@ export const make = Effect.fn("KiloAdapterV2.make")(function* (options: {
           if (previous) messages.set(entry.info.id, previous);
           roles.set(entry.info.id, entry.info.role);
           if (entry.info.id === active?.messageID) active.admitted = true;
-          for (const part of entry.parts) putPart(part);
+          for (const part of entry.parts) {
+            putPart(part);
+            if (
+              part.type === "tool" &&
+              part.tool === "task" &&
+              parents.get(part.messageID) === active?.messageID
+            )
+              yield* task(part);
+          }
           // Snapshot reads must not re-publish historical records over T3's durable run metadata.
           yield* messageFromParts(
             entry.info.id,
@@ -1189,7 +1215,16 @@ export const make = Effect.fn("KiloAdapterV2.make")(function* (options: {
         eventFiber = yield* watch.pipe(Effect.forkIn(scope));
         yield* Deferred.await(ready).pipe(
           Effect.timeout("10 seconds"),
-          Effect.mapError(() => error("Kilo stream readiness timed out")),
+          Effect.catchTag("TimeoutError", () =>
+            Effect.fail(error("Kilo stream readiness timed out")),
+          ),
+          Effect.onError(() =>
+            Effect.gen(function* () {
+              if (eventFiber) yield* Fiber.interrupt(eventFiber);
+              eventFiber = undefined;
+              subscribed = false;
+            }),
+          ),
         );
         subscribed = true;
       });

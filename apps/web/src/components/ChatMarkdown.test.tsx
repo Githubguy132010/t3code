@@ -1,10 +1,11 @@
-import { EnvironmentId } from "@t3tools/contracts";
+import { EnvironmentId, ThreadId } from "@t3tools/contracts";
 import { act, type ComponentProps, type ReactNode } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { create, type ReactTestRenderer } from "react-test-renderer";
 import { describe, expect, it, vi } from "vite-plus/test";
 
 import { getSyntaxHighlighterPromise } from "../lib/syntaxHighlighting";
+import { useRightPanelStore } from "../rightPanelStore";
 import { GitHubIcon } from "./Icons";
 import { Button } from "./ui/button";
 import { setMarkdownTaskChecked } from "./files/filePreviewMode";
@@ -60,6 +61,7 @@ vi.mock("~/lib/openPullRequestLink", () => ({
 }));
 
 import ChatMarkdown, {
+  ChatMarkdownLocalWorkspaceContext,
   canUseMarkdownFileShellActions,
   hasMarkdownFilePrimaryAction,
   shouldUseMarkdownFileBrowserPrimaryAction,
@@ -72,6 +74,70 @@ function codeButton(renderer: ReactTestRenderer, label: string) {
   if (!button) throw new Error(`Missing code button: ${label}`);
   return button.props as ComponentProps<typeof Button>;
 }
+
+describe("cloud Markdown workspace boundary", () => {
+  it("opens a local file in a local thread but never exposes host file or shell actions in cloud text", async () => {
+    vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+    const threadRef = {
+      environmentId: EnvironmentId.make("workspace-boundary"),
+      threadId: ThreadId.make("workspace-boundary"),
+    };
+    const text =
+      "[File](/tmp/project/src/secret.txt) and [Web](https://example.com)\n\n```bash\necho harmless\n```";
+    const shell = vi.fn();
+    let renderer: ReactTestRenderer | undefined;
+    const render = (allowed: boolean) => (
+      <ChatMarkdownLocalWorkspaceContext value={allowed}>
+        <ChatMarkdown
+          cwd="/tmp/project"
+          threadRef={threadRef}
+          text={text}
+          onRunShellCommand={shell}
+        />
+      </ChatMarkdownLocalWorkspaceContext>
+    );
+    try {
+      await act(async () => {
+        renderer = create(render(true));
+      });
+      const link = renderer!.root
+        .findAllByType("a")
+        .find((node) => node.props.href === "/tmp/project/src/secret.txt");
+      expect(link).toBeDefined();
+      await act(async () => {
+        link!.props.onClick({ preventDefault() {}, stopPropagation() {} });
+      });
+      const opened = Object.values(useRightPanelStore.getState().byThreadKey).flatMap(
+        (entry) => entry.surfaces,
+      );
+      expect(
+        opened.some(
+          (surface) => surface.kind === "file" && surface.relativePath === "src/secret.txt",
+        ),
+      ).toBe(true);
+      await act(async () => {
+        renderer!.update(render(false));
+      });
+      expect(
+        renderer!.root
+          .findAllByType("a")
+          .some((node) => node.props.href === "/tmp/project/src/secret.txt"),
+      ).toBe(false);
+      expect(
+        renderer!.root.findAllByType("a").some((node) => node.props.href === "https://example.com"),
+      ).toBe(true);
+      expect(
+        renderer!.root
+          .findAllByType(Button)
+          .some((node) => node.props["aria-label"] === "Run in terminal"),
+      ).toBe(false);
+      expect(shell).not.toHaveBeenCalled();
+    } finally {
+      if (renderer) await act(async () => renderer!.unmount());
+      vi.unstubAllGlobals();
+    }
+  });
+});
 
 describe("ChatMarkdown context references", () => {
   it("renders text and image references through the chip renderer, with readable fallback", async () => {

@@ -10,6 +10,9 @@ import {
   type ProviderInstanceId,
 } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
+import * as Clock from "effect/Clock";
+import * as Exit from "effect/Exit";
+import * as Fiber from "effect/Fiber";
 import * as Crypto from "effect/Crypto";
 import * as Deferred from "effect/Deferred";
 import * as DateTime from "effect/DateTime";
@@ -196,6 +199,9 @@ export const make = Effect.fn("KiloCloudAdapterV2.make")(function* (options: {
       let binding: Cloud.CloudBinding | undefined;
       let watching = false;
       let streamWatching = false;
+      let streamFiber: Fiber.Fiber<void> | undefined;
+      let admissionProbeAt = 0;
+      let admissionProbeDelay = 2_000;
       let streamCursor = 0;
       let monitorSandbox = false;
       let taskState:
@@ -363,6 +369,9 @@ export const make = Effect.fn("KiloCloudAdapterV2.make")(function* (options: {
           providerSession: { ...session, status: "ready", updatedAt: at, lastError: null },
         });
         active = undefined;
+        // Terminal task state must not pin a history retry forever. Reopening
+        // the thread can retry history independently of the ended turn.
+        needsHistoryRestore = false;
         if (!binding) monitorSandbox = false;
         taskState = terminal;
         yield* Deferred.succeed(terminalSignal, undefined);
@@ -607,6 +616,10 @@ export const make = Effect.fn("KiloCloudAdapterV2.make")(function* (options: {
         const expectedMessageId = active?.messageId;
         if (!binding) {
           if (active && !active.prepared) {
+            const now = yield* Clock.currentTimeMillis;
+            if (now < admissionProbeAt) return;
+            admissionProbeAt = now + admissionProbeDelay;
+            admissionProbeDelay = Math.min(admissionProbeDelay * 2, 60_000);
             const found = yield* wire(
               options.client.findAdmission(options.repository, active.messageId),
             );
@@ -731,6 +744,8 @@ export const make = Effect.fn("KiloCloudAdapterV2.make")(function* (options: {
               ? null
               : billing.estimatedHourlyRateMicrodollars / 1_000_000,
         };
+        if (!active && sandbox?.status === "sleeping" && billing?.phase === "idle")
+          monitorSandbox = false;
         const signature = encode(snapshot);
         if (signature !== lifecycleSignature) {
           lifecycleSignature = signature;
@@ -743,14 +758,12 @@ export const make = Effect.fn("KiloCloudAdapterV2.make")(function* (options: {
           };
           yield* emit({ type: "provider_thread.updated", driver, providerThread: thread });
         }
-        if (!active && sandbox?.status === "sleeping" && billing?.phase === "idle")
-          monitorSandbox = false;
       });
       const watchEvents = Effect.gen(function* () {
         if (streamWatching || !binding) return;
         streamWatching = true;
         const ownedBinding = binding;
-        yield* Effect.gen(function* () {
+        streamFiber = yield* Effect.gen(function* () {
           // State is changed by the reconciler while this reader observes notifications.
           // oxlint-disable-next-line no-unmodified-loop-condition
           while (active || needsHistoryRestore || monitorSandbox) {
@@ -779,10 +792,16 @@ export const make = Effect.fn("KiloCloudAdapterV2.make")(function* (options: {
             );
             if (active || needsHistoryRestore || monitorSandbox) yield* Effect.sleep("5 seconds");
           }
-          streamWatching = false;
-        }).pipe(Effect.forkIn(scope));
+        }).pipe(
+          Effect.ensuring(
+            Effect.sync(() => {
+              streamWatching = false;
+            }),
+          ),
+          Effect.forkIn(scope),
+        );
       });
-      const watch = Effect.gen(function* () {
+      const watch: Effect.Effect<void> = Effect.gen(function* () {
         if (watching) {
           yield* Queue.offer(wake, undefined);
           return;
@@ -793,6 +812,7 @@ export const make = Effect.fn("KiloCloudAdapterV2.make")(function* (options: {
           // Reconcile and lifecycle update this session state.
           // oxlint-disable-next-line no-unmodified-loop-condition
           while (active || needsHistoryRestore || monitorSandbox) {
+            const pollStartedAt = yield* Clock.currentTimeMillis;
             yield* watchEvents;
             if (active || needsHistoryRestore)
               yield* gate
@@ -810,10 +830,33 @@ export const make = Effect.fn("KiloCloudAdapterV2.make")(function* (options: {
               yield* Effect.raceFirst(
                 Effect.sleep(active ? "2 seconds" : "15 seconds"),
                 Queue.take(wake),
+              ).pipe(
+                Effect.andThen(
+                  Effect.gen(function* () {
+                    // Stream notifications may reduce idle latency, but never amplify
+                    // polling beyond one reconciliation per two seconds.
+                    const elapsed = (yield* Clock.currentTimeMillis) - pollStartedAt;
+                    if (elapsed < 2_000) yield* Effect.sleep(2_000 - elapsed);
+                  }),
+                ),
               );
           }
-          watching = false;
-        }).pipe(Effect.forkIn(scope));
+        }).pipe(
+          Effect.onExit((exit) =>
+            gate.withPermit(
+              Effect.gen(function* () {
+                if (streamFiber) yield* Fiber.interrupt(streamFiber);
+                streamFiber = undefined;
+                watching = false;
+                // A turn may arrive while the previous socket is closing. Starting
+                // and retiring the watcher share the turn gate, so its wake is not lost.
+                if (Exit.isSuccess(exit) && (active || needsHistoryRestore || monitorSandbox))
+                  yield* watch;
+              }),
+            ),
+          ),
+          Effect.forkIn(scope),
+        );
       });
       const policyHash = (policy: Adapter.ProviderAdapterV2RuntimePolicy) =>
         wire(
@@ -918,6 +961,11 @@ export const make = Effect.fn("KiloCloudAdapterV2.make")(function* (options: {
                     "No durable cloud intent exists for this run. No task was resubmitted.",
                   );
                 active = saved;
+                yield* emit({
+                  type: "provider_turn.updated",
+                  driver,
+                  providerTurn: saved.providerTurn,
+                });
                 binding = saved.binding ?? undefined;
                 monitorSandbox = true;
                 if (
@@ -953,9 +1001,9 @@ export const make = Effect.fn("KiloCloudAdapterV2.make")(function* (options: {
                   "Plan mode is not yet supported for Kilo Cloud. No task was submitted.",
                 );
               const selectedPolicyHash = yield* policyHash(request.runtimePolicy);
-              const priorIntent = (yield* wire(options.journal.read)).findLast(
-                (entry) => entry.providerThread.id === request.providerThread.id,
-              );
+              const priorIntent = (yield* wire(
+                options.journal.readThread(request.providerThread.id),
+              )).findLast((entry) => entry.providerThread.id === request.providerThread.id);
               if (priorIntent && priorIntent.policyHash !== selectedPolicyHash)
                 return yield* error(
                   "Cloud permissions changed. Start a separate cloud thread; the remote agent retains its original permissions.",
@@ -987,6 +1035,7 @@ export const make = Effect.fn("KiloCloudAdapterV2.make")(function* (options: {
                 nativeMetadata: {
                   ...request.providerThread.nativeMetadata,
                   continuationKey: options.continuationKey,
+                  // Older correlations remain in their durable journal intents.
                   turnCorrelations: {
                     [messageId]: {
                       messageId: request.message.messageId,

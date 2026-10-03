@@ -336,7 +336,7 @@ function ThreadRouteContent(
   } = useThreadSelection();
   const selectedThreadDetailState = props.selectedThreadDetailState;
   const selectedThreadDetail = Option.getOrNull(selectedThreadDetailState.data);
-  const { selectedThreadCwd } = useSelectedThreadWorktree();
+  const { selectedThreadCwd, localWorkspaceEnabled } = useSelectedThreadWorktree();
   const composer = useThreadComposerState();
   const gitState = useSelectedThreadGitState();
   const gitActions = useSelectedThreadGitActions();
@@ -374,6 +374,7 @@ function ThreadRouteContent(
   const mergeBackBusyRef = useRef(false);
   const handleMergeBack = useCallback(async () => {
     if (
+      !localWorkspaceEnabled ||
       mergeBackBusyRef.current ||
       !selectedThread ||
       mergeBackTargetThreadId === null ||
@@ -400,7 +401,14 @@ function ThreadRouteContent(
     } finally {
       mergeBackBusyRef.current = false;
     }
-  }, [mergeBack, mergeBackRun, mergeBackTargetThreadId, navigation, selectedThread]);
+  }, [
+    localWorkspaceEnabled,
+    mergeBack,
+    mergeBackRun,
+    mergeBackTargetThreadId,
+    navigation,
+    selectedThread,
+  ]);
   const params = props.route.params;
   const environmentIdRaw = firstRouteParam(params.environmentId);
   const environmentId = environmentIdRaw ? EnvironmentId.make(environmentIdRaw) : null;
@@ -825,10 +833,14 @@ function ThreadRouteContent(
     ],
   );
   const threadGitControlProps = {
+    gitControlsEnabled: localWorkspaceEnabled,
     environmentId: environmentIdRaw ?? "",
     threadId: threadId ?? "",
     auxiliaryPaneControl:
-      !layout.usesSplitView && fileInspector.supported && selectedThreadCwd !== null
+      localWorkspaceEnabled &&
+      !layout.usesSplitView &&
+      fileInspector.supported &&
+      selectedThreadCwd !== null
         ? {
             accessibilityLabel: "Toggle inspector",
             onPress: handleToggleInspector,
@@ -841,7 +853,7 @@ function ThreadRouteContent(
     onOpenGitInspector:
       !isCloudThread && fileInspector.supported ? handleOpenGitInspector : undefined,
     onMergeBack:
-      mergeBackTargetThreadId !== null && mergeBackRun !== null
+      localWorkspaceEnabled && mergeBackTargetThreadId !== null && mergeBackRun !== null
         ? () => void handleMergeBack()
         : undefined,
     currentBranch: selectedThread?.branch ?? null,

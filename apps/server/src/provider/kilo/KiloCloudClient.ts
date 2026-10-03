@@ -12,6 +12,7 @@ export class KiloCloudError extends Schema.TaggedError<KiloCloudError>()("KiloCl
   operation: Schema.String,
   reason: Schema.Literals([
     "rejected",
+    "not_found",
     "admission_unknown",
     "invalid_response",
     "wrong_owner",
@@ -91,7 +92,7 @@ export const make = (input: {
         mutation ? HttpClientRequest.bodyText(req, encode(body), "application/json") : req,
       );
       if (response.status < 200 || response.status >= 300)
-        return yield* response.status >= 500
+        return yield* response.status >= 500 || response.status === 408 || response.status === 409
           ? uncertain()
           : new KiloCloudError({ operation, reason: "rejected", messageId });
       const bytes = yield* response.stream.pipe(

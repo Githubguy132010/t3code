@@ -210,7 +210,11 @@ export const make = (options: {
       if (response.status < 200 || response.status >= 300)
         return yield* response.status >= 500 || response.status === 408 || response.status === 409
           ? uncertain()
-          : failure(operation, "rejected", messageId);
+          : failure(
+              operation,
+              !mutation && response.status === 404 ? "not_found" : "rejected",
+              messageId,
+            );
       const chunks: Uint8Array[] = [];
       let size = 0;
       yield* response.stream.pipe(
@@ -300,6 +304,19 @@ export const make = (options: {
           return yield* failure("profile-preflight", "rejected");
       }
     });
+  // Keep progress across the adapter's bounded reconcile calls. A timed-out GET
+  // retries only that read, never the paid admission or the whole first page.
+  const admissionScans = new Map<
+    string,
+    {
+      cursor?: string | undefined;
+      pending: Array<{ session_id: string; cloud_agent_session_id: string | null }>;
+      deferred: Array<{ session_id: string; cloud_agent_session_id: string | null }>;
+      loaded: boolean;
+      seenCursors: Set<string>;
+      matches: Map<string, typeof Prepared.Type>;
+    }
+  >();
   return {
     getSession,
     /** Short-lived customer tickets only. A closed socket has no stop semantics. */
@@ -342,40 +359,101 @@ export const make = (options: {
         }),
       ).pipe(
         Stream.scoped,
-        Stream.mapError(() => failure("events", "invalid_response")),
+        Stream.mapError((cause) =>
+          isCloudError(cause) ? cause : failure("events", "invalid_response"),
+        ),
       ),
     // Recovery only: enumerate access-checked metadata and correlate the persisted
     // initial message, never replay a paid prepare after a lost response.
     findAdmission: (repository: string, initialMessageId: string) =>
       Effect.gen(function* () {
-        const page = yield* request(
-          "cliSessionsV2.list",
-          { gitUrl: `https://github.com/${repository}`, limit: 100 },
-          Schema.Struct({
-            cliSessions: Schema.Array(
+        const key = `${repository}\0${initialMessageId}`;
+        let scan = admissionScans.get(key);
+        if (!scan) {
+          scan = {
+            pending: [],
+            deferred: [],
+            loaded: false,
+            seenCursors: new Set(),
+            matches: new Map(),
+          };
+          admissionScans.set(key, scan);
+        }
+        // At most 25 candidate reads per call. Later polls continue this scan.
+        for (let budget = 25; budget > 0; budget--) {
+          if (!scan.pending.length) {
+            if (scan.loaded && !scan.cursor) {
+              if (scan.deferred.length) {
+                scan.pending = scan.deferred;
+                scan.deferred = [];
+                return null;
+              }
+              admissionScans.delete(key);
+              if (scan.matches.size > 1)
+                return yield* failure("reconcile-admission", "wrong_owner");
+              return [...scan.matches.values()][0] ?? null;
+            }
+            const page = yield* request(
+              "cliSessionsV2.list",
+              {
+                gitUrl: `https://github.com/${repository}`,
+                limit: 100,
+                orderBy: "created_at",
+                organizationId: null,
+                ...(scan.cursor ? { cursor: scan.cursor } : {}),
+              },
               Schema.Struct({
-                session_id: NativeId,
-                cloud_agent_session_id: Schema.NullOr(Schema.String),
+                cliSessions: Schema.Array(
+                  Schema.Struct({
+                    session_id: NativeId,
+                    cloud_agent_session_id: Schema.NullOr(Schema.String),
+                  }),
+                ),
+                nextCursor: Schema.NullOr(Schema.String),
+              }),
+            );
+            if (page.nextCursor && scan.seenCursors.has(page.nextCursor))
+              return yield* failure("reconcile-admission", "invalid_response");
+            if (page.nextCursor) scan.seenCursors.add(page.nextCursor);
+            scan.cursor = page.nextCursor ?? undefined;
+            scan.loaded = true;
+            scan.pending = page.cliSessions.filter((candidate) =>
+              candidate.cloud_agent_session_id?.startsWith("workspace_"),
+            );
+            if (!scan.pending.length) continue;
+          }
+          const candidate = scan.pending.shift()!;
+          const deferred = scan.deferred;
+          const session = yield* getSession(candidate.cloud_agent_session_id!).pipe(
+            Effect.catchTag("KiloCloudError", (error) => {
+              if (error.reason === "not_found") return Effect.succeed(null);
+              if (error.reason === "invalid_response")
+                return Effect.sync(() => {
+                  deferred.push(candidate);
+                  return null;
+                });
+              return Effect.fail(error);
+            }),
+            // Preserve and rotate an interrupted/unavailable read. A stale first
+            // candidate must not starve all subsequent candidates on every poll.
+            Effect.onError(() =>
+              Effect.sync(() => {
+                deferred.push(candidate);
               }),
             ),
-          }),
-        );
-        const matches: Array<typeof Prepared.Type> = [];
-        for (const candidate of page.cliSessions) {
-          if (!candidate.cloud_agent_session_id?.startsWith("workspace_")) continue;
-          const session = yield* getSession(candidate.cloud_agent_session_id);
+          );
+          if (!session) continue;
           if (
             session.initialMessageId === initialMessageId &&
             session.githubRepo === repository &&
             session.kiloSessionId === candidate.session_id
           )
-            matches.push({
+            scan.matches.set(session.sessionId, {
               cloudAgentSessionId: session.sessionId,
               kiloSessionId: session.kiloSessionId,
             });
         }
-        if (matches.length > 1) return yield* failure("reconcile-admission", "wrong_owner");
-        return matches[0] ?? null;
+        return null;
       }),
     /** Admission is paid. Persist operationKey and initialMessageId before calling; no retries here. */
     prepare: (input: {
