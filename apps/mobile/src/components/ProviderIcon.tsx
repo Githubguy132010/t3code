@@ -1,3 +1,4 @@
+import { kiloIconPaths } from "@t3tools/client-runtime/kilo-icon";
 import { Image } from "expo-image";
 import { Path, Svg } from "react-native-svg";
 import { View } from "react-native";
@@ -133,6 +134,15 @@ export function ProviderIcon(props: ProviderIconProps) {
     );
   }
 
+  if (props.provider === "kilo") {
+    return (
+      <Svg width={size} height={size} viewBox="0 0 512 512">
+        {kiloIconPaths.map((path) => (
+          <Path key={path.d} {...path} />
+        ))}
+      </Svg>
+    );
+  }
   if (props.provider === "opencode") {
     return (
       <Svg width={size} height={size} viewBox="0 0 32 40" fill="none">

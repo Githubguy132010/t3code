@@ -57,6 +57,72 @@ async function withClient(
 }
 
 describe("Kilo native SDK boundary", () => {
+  it("recovers pending interactions only from the verified session family", async () => {
+    const client = await withClient((req, res) => {
+      if (req.url?.startsWith("/permission"))
+        return json(res, [
+          { id: "per_root", sessionID: ref.sessionId },
+          { id: "per_child", sessionID: "ses_child" },
+          { id: "per_foreign", sessionID: "ses_foreign" },
+          { id: "per_other_dir", sessionID: "ses_other_dir" },
+        ]);
+      if (req.url?.startsWith("/question"))
+        return json(res, [{ id: "q_child", sessionID: "ses_grandchild" }]);
+      const id = req.url?.split("/").at(-1)?.split("?")[0];
+      json(res, {
+        id,
+        directory: id === "ses_other_dir" ? "/another-workspace" : directory,
+        ...(id === "ses_child" || id === "ses_other_dir"
+          ? { parentID: ref.sessionId }
+          : id === "ses_grandchild"
+            ? { parentID: "ses_child" }
+            : {}),
+      });
+    });
+    expect((await run(client.pending(ref))).map((item) => item.id)).toEqual(["per_root"]);
+    expect((await run(client.pending(ref, true))).map((item) => item.id)).toEqual([
+      "per_root",
+      "per_child",
+      "q_child",
+    ]);
+  });
+  it.each([null, [], { ses_one: null }, { ses_one: { type: "completed" } }])(
+    "never treats a malformed native status as idle: %j",
+    async (payload) => {
+      const client = await withClient((req, res) =>
+        json(
+          res,
+          req.url?.startsWith("/session/status") ? payload : { id: ref.sessionId, directory },
+        ),
+      );
+      const failure = await run(client.status(ref).pipe(Effect.flip));
+      expect(failure.reason).toBe("invalid_response");
+    },
+  );
+  it.each([{}, { info: {}, parts: null }, { info: {}, parts: [{ type: "text" }] }, null])(
+    "rejects malformed native generation without a defect: %j",
+    async (payload) => {
+      const client = await withClient((req, res) =>
+        json(res, req.method === "GET" ? { id: ref.sessionId, directory } : payload),
+      );
+      const failure = await run(
+        client.generate(ref, { parts: [{ type: "text", text: "test" }] }).pipe(Effect.flip),
+      );
+      expect(failure.reason).toBe("invalid_response");
+    },
+  );
+  it("classifies a rejected prompt as definitive without resubmitting", async () => {
+    let submitted = 0;
+    const client = await withClient((req, res) => {
+      if (req.method === "GET") return json(res, { id: ref.sessionId, directory });
+      submitted++;
+      res.writeHead(400, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: "invalid prompt" }));
+    });
+    const failure = await run(client.prompt(ref, { parts: [] }).pipe(Effect.flip));
+    expect(failure.reason).toBe("request_failed");
+    expect(submitted).toBe(1);
+  });
   it("uses Kilo auth and lossless directory routing with the real SDK", async () => {
     const requests: Array<{
       url: string;

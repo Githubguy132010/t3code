@@ -968,6 +968,41 @@ export const OpenCodeSettings = makeProviderSettingsSchema(
 );
 export type OpenCodeSettings = typeof OpenCodeSettings.Type;
 
+export const KiloSettings = makeProviderSettingsSchema(
+  {
+    enabled: Schema.Boolean.pipe(
+      Schema.withDecodingDefault(Effect.succeed(false)),
+      Schema.annotateKey({ providerSettingsForm: { hidden: true } }),
+    ),
+    binaryPath: makeBinaryPathSetting("kilo").pipe(
+      Schema.annotateKey({
+        title: "Binary path",
+        description: "Kilo CLI 7.8.3 executable.",
+        providerSettingsForm: { placeholder: "kilo", clearWhenEmpty: "omit" },
+      }),
+    ),
+    accountId: TrimmedNonEmptyString.pipe(
+      Schema.withDecodingDefault(Effect.succeed("default")),
+      Schema.annotateKey({
+        title: "Account profile",
+        description:
+          "Use a separate profile for each account. Changing it disconnects the previous account's sessions.",
+      }),
+    ),
+    profileDirectory: TrimmedString.pipe(
+      Schema.withDecodingDefault(Effect.succeed("")),
+      Schema.annotateKey({
+        title: "Profile directory",
+        description:
+          "Optional XDG root containing config, data, cache and state. Leave empty for an isolated T3 profile. Sign in with Kilo separately; T3 never signs in automatically.",
+        providerSettingsForm: { placeholder: "Managed by T3", clearWhenEmpty: "omit" },
+      }),
+    ),
+  },
+  { order: ["binaryPath", "accountId", "profileDirectory"] },
+);
+export type KiloSettings = typeof KiloSettings.Type;
+
 /**
  * A read-only quota source outside this environment's provider CLIs. The
  * only kind today is a CLIProxyAPI hub, whose management API reports the

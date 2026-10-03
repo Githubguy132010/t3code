@@ -8,6 +8,7 @@ import { useRef, useState } from "react";
 import { Alert, Linking, Pressable, ScrollView, TextInput, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
+import { ProviderIcon } from "../../components/ProviderIcon";
 import { AppText as Text } from "../../components/AppText";
 import { ScreenScrollView } from "../../components/ScreenScrollView";
 import { useEnvironmentQuery } from "../../state/query";
@@ -43,18 +44,33 @@ export function SettingsProviderAccountsRouteScreen() {
                 {environment.serverConfig.providers
                   .filter(
                     (provider) =>
+                      provider.driver === "kilo" ||
                       provider.setup?.canAuthenticate ||
                       (provider.driver === "acpRegistry" && provider.installed),
                   )
-                  .map((provider) => (
-                    <ProviderAccount
-                      key={provider.instanceId}
-                      environment={environment}
-                      provider={provider}
-                    />
-                  ))}
+                  .map((provider) =>
+                    provider.driver === "kilo" ? (
+                      <View key={provider.instanceId} className="gap-2 p-4">
+                        <View className="flex-row items-center gap-2">
+                          <ProviderIcon provider="kilo" size={24} />
+                          <Text>{provider.displayName}</Text>
+                        </View>
+                        <Text className="text-foreground-muted">
+                          {provider.message ??
+                            "Kilo runs on this environment. Manage its isolated account profile in web or desktop Settings."}
+                        </Text>
+                      </View>
+                    ) : (
+                      <ProviderAccount
+                        key={provider.instanceId}
+                        environment={environment}
+                        provider={provider}
+                      />
+                    ),
+                  )}
                 {!environment.serverConfig.providers.some(
                   (provider) =>
+                    provider.driver === "kilo" ||
                     provider.setup?.canAuthenticate ||
                     (provider.driver === "acpRegistry" && provider.installed),
                 ) ? (

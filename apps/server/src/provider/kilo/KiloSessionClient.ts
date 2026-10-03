@@ -1,4 +1,5 @@
-import { createKiloClient, type Event, type KiloClient } from "@kilocode/sdk/v2";
+// @effect-diagnostics globalTimers:off - watchdog for the SDK async iterator; avoids a fiber and timer race per SSE record.
+import { createKiloClient, type Event, type KiloClient, type Session } from "@kilocode/sdk/v2";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
@@ -39,6 +40,17 @@ const EventEnvelope = Schema.Struct({
   properties: Schema.Record(Schema.String, Schema.Unknown),
 });
 
+const isStatusMap = Schema.is(
+  Schema.Record(Schema.String, Schema.Struct({ type: Schema.Literals(["idle", "busy", "retry"]) })),
+);
+const isGeneration = Schema.is(
+  Schema.Struct({
+    info: Schema.Record(Schema.String, Schema.Unknown),
+    parts: Schema.Array(
+      Schema.Struct({ type: Schema.String, text: Schema.optional(Schema.String) }),
+    ),
+  }),
+);
 const isKiloSessionError = Schema.is(KiloSessionError);
 const isSyncEnvelope = Schema.is(
   Schema.Struct({
@@ -51,14 +63,12 @@ const isPendingOwners = Schema.is(PendingOwners);
 const isEventEnvelope = Schema.is(EventEnvelope);
 const isRecord = Schema.is(Schema.Record(Schema.String, Schema.Unknown));
 
-function sessionIdOf(event: Event): Effect.Effect<string | undefined, KiloSessionError> {
+function sessionIdOf(event: Event): string | undefined | KiloSessionError {
   // The server also sends replication envelopes omitted from its generated Event union.
   // Ordinary session/message events follow these and remain the source for this stream.
-  if (isSyncEnvelope(event)) return Effect.succeed(undefined);
+  if (isSyncEnvelope(event)) return undefined;
   if (!isEventEnvelope(event)) {
-    return Effect.fail(
-      new KiloSessionError({ operation: "event.subscribe", reason: "invalid_response" }),
-    );
+    return new KiloSessionError({ operation: "event.subscribe", reason: "invalid_response" });
   }
   const properties = event.properties;
   let value: unknown;
@@ -74,20 +84,16 @@ function sessionIdOf(event: Event): Effect.Effect<string | undefined, KiloSessio
   ) {
     value = isRecord(properties.info) ? properties.info.id : undefined;
   } else if (event.type === "session.error") {
-    return Effect.fail(
-      new KiloSessionError({ operation: "event.subscribe", reason: "request_failed" }),
-    );
+    return new KiloSessionError({ operation: "event.subscribe", reason: "request_failed" });
   } else {
     // Directory streams include global config, PTY and health events. Their `info`
     // fields are not session records and must not terminate unrelated sessions.
-    return Effect.succeed(undefined);
+    return undefined;
   }
   if (typeof value !== "string" || value.length === 0) {
-    return Effect.fail(
-      new KiloSessionError({ operation: "event.subscribe", reason: "invalid_response" }),
-    );
+    return new KiloSessionError({ operation: "event.subscribe", reason: "invalid_response" });
   }
-  return Effect.succeed(value);
+  return value;
 }
 
 /**
@@ -175,6 +181,35 @@ export const make = Effect.fn("KiloSessionClient.make")(function* (input: {
     sessionId: session.id,
   });
 
+  const ownerCheck = (ref: KiloSessionRef, signal: AbortSignal) => {
+    const owners = new Map<string, boolean>([[ref.sessionId, true]]);
+    return async (sessionId: string): Promise<boolean> => {
+      let id: string | undefined = sessionId;
+      const visited = new Set<string>();
+      while (id && !visited.has(id) && visited.size < 32) {
+        const cached = owners.get(id);
+        if (cached !== undefined) {
+          owners.set(sessionId, cached);
+          return cached;
+        }
+        visited.add(id);
+        const session: Session | undefined = (
+          await client.session.get(
+            { sessionID: id },
+            {
+              signal: AbortSignal.any([signal, AbortSignal.timeout(10_000)]),
+            },
+          )
+        ).data;
+        if (!isSessionOwner(session) || session.id !== id || session.directory !== input.directory)
+          break;
+        id = session.parentID;
+      }
+      owners.set(sessionId, false);
+      return false;
+    };
+  };
+
   const health = yield* request("global.health", (signal) => client.global.health({ signal })).pipe(
     Effect.flatMap((value) =>
       decodeHealth(value).pipe(
@@ -251,7 +286,7 @@ export const make = Effect.fn("KiloSessionClient.make")(function* (input: {
                   sessionID: ref.sessionId,
                   directory: input.directory,
                 },
-                { signal },
+                { signal, throwOnError: false },
               ),
             catch: (cause) =>
               new KiloSessionError({
@@ -278,8 +313,44 @@ export const make = Effect.fn("KiloSessionClient.make")(function* (input: {
             : Effect.fail(
                 new KiloSessionError({
                   operation: "session.promptAsync",
-                  reason: "invalid_response",
+                  reason:
+                    response.response?.status &&
+                    response.response.status >= 400 &&
+                    response.response.status < 500
+                      ? "request_failed"
+                      : "admission_unknown",
                 }),
+              ),
+        ),
+      ),
+    generate: (
+      ref: KiloSessionRef,
+      prompt: Omit<
+        Parameters<KiloClient["session"]["prompt"]>[0],
+        "sessionID" | "directory" | "workspace"
+      >,
+    ) =>
+      read(ref).pipe(
+        Effect.andThen(
+          Effect.tryPromise({
+            try: (signal) =>
+              client.session.prompt({ ...prompt, sessionID: ref.sessionId }, { signal }),
+            catch: () =>
+              new KiloSessionError({ operation: "session.prompt", reason: "admission_unknown" }),
+          }),
+        ),
+        Effect.timeout("2 minutes"),
+        Effect.mapError(
+          () => new KiloSessionError({ operation: "session.prompt", reason: "request_failed" }),
+        ),
+        Effect.flatMap((response) =>
+          isGeneration(response.data) &&
+          response.data &&
+          !response.data.info.error &&
+          response.data.parts.every((part) => part.type !== "text" || typeof part.text === "string")
+            ? Effect.succeed(response.data)
+            : Effect.fail(
+                new KiloSessionError({ operation: "session.prompt", reason: "invalid_response" }),
               ),
         ),
       ),
@@ -325,7 +396,50 @@ export const make = Effect.fn("KiloSessionClient.make")(function* (input: {
               ),
         ),
       ),
-    events: (ref: KiloSessionRef) =>
+    pending: (ref: KiloSessionRef, includeChildren = false) =>
+      owned(ref, "interaction.list", async (signal) => {
+        const [permissions, questions] = await Promise.all([
+          client.permission.list(undefined, { signal }),
+          client.question.list(undefined, { signal }),
+        ]);
+        if (!isPendingOwners(permissions.data) || !isPendingOwners(questions.data))
+          throw new KiloSessionError({ operation: "interaction.list", reason: "invalid_response" });
+        const belongs = ownerCheck(ref, signal);
+        const pending = [...permissions.data, ...questions.data];
+        const decisions = await Promise.all(
+          pending.map((entry) =>
+            entry.sessionID === ref.sessionId
+              ? true
+              : includeChildren
+                ? belongs(entry.sessionID)
+                : false,
+          ),
+        );
+        return { data: pending.filter((_, index) => decisions[index]) };
+      }),
+    status: (ref: KiloSessionRef) =>
+      owned(ref, "session.status", (signal) => client.session.status(undefined, { signal })).pipe(
+        Effect.filterOrFail(
+          isStatusMap,
+          () => new KiloSessionError({ operation: "session.status", reason: "invalid_response" }),
+        ),
+        Effect.map((statuses) => statuses[ref.sessionId]?.type ?? "idle"),
+      ),
+    setPermissions: (
+      ref: KiloSessionRef,
+      permission: NonNullable<Parameters<KiloClient["session"]["update"]>[0]>["permission"],
+    ) =>
+      owned(ref, "session.update", (signal) =>
+        client.session.update(
+          { sessionID: ref.sessionId, ...(permission === undefined ? {} : { permission }) },
+          { signal },
+        ),
+      ),
+    events: (
+      ref: KiloSessionRef,
+      onConnected: Effect.Effect<void, KiloSessionError> = Effect.void,
+      includeChildren = false,
+    ) =>
       Stream.unwrap(
         read(ref).pipe(
           Effect.andThen(
@@ -352,8 +466,36 @@ export const make = Effect.fn("KiloSessionClient.make")(function* (input: {
               const interruptible: AsyncIterable<Event> = {
                 [Symbol.asyncIterator]() {
                   const iterator = subscription.stream[Symbol.asyncIterator]();
+                  const belongsToRoot = ownerCheck(ref, controller.signal);
                   return {
-                    next: () => iterator.next(),
+                    next: async () => {
+                      // Filter before crossing the Effect stream boundary. No batching or additional
+                      // queue: SDK backpressure and order are preserved, including readiness.
+                      while (true) {
+                        const timer = setTimeout(() => controller.abort(), 45_000);
+                        let result: IteratorResult<Event>;
+                        try {
+                          result = await iterator.next();
+                        } finally {
+                          clearTimeout(timer);
+                        }
+                        if (result.done) return result;
+                        if (
+                          isEventEnvelope(result.value) &&
+                          result.value.type === "server.connected"
+                        )
+                          return result;
+                        const owner = sessionIdOf(result.value);
+                        if (typeof owner === "object") throw owner;
+                        if (
+                          owner === ref.sessionId ||
+                          (includeChildren &&
+                            typeof owner === "string" &&
+                            (await belongsToRoot(owner)))
+                        )
+                          return result;
+                      }
+                    },
                     return: async () => {
                       // Abort a pending reader.read before awaiting generator cleanup.
                       // A scope finalizer alone runs after fromAsyncIterable's finalizer.
@@ -365,16 +507,15 @@ export const make = Effect.fn("KiloSessionClient.make")(function* (input: {
                   };
                 },
               };
-              return Stream.fromAsyncIterable(
-                interruptible,
-                (cause) =>
-                  new KiloSessionError({
-                    operation: "event.subscribe",
-                    reason: "request_failed",
-                    cause,
-                  }),
+              return Stream.fromAsyncIterable(interruptible, (cause) =>
+                isKiloSessionError(cause)
+                  ? cause
+                  : new KiloSessionError({
+                      operation: "event.subscribe",
+                      reason: "request_failed",
+                      cause,
+                    }),
               ).pipe(
-                Stream.timeout("45 seconds"),
                 Stream.mapError((cause) =>
                   isKiloSessionError(cause)
                     ? cause
@@ -384,9 +525,12 @@ export const make = Effect.fn("KiloSessionClient.make")(function* (input: {
                         cause,
                       }),
                 ),
-                Stream.filterEffect((event) =>
-                  sessionIdOf(event).pipe(Effect.map((sessionId) => sessionId === ref.sessionId)),
+                Stream.tap((event) =>
+                  isEventEnvelope(event) && event.type === "server.connected"
+                    ? onConnected
+                    : Effect.void,
                 ),
+                Stream.filter((event) => event.type !== "server.connected"),
                 Stream.concat(
                   Stream.unwrap(
                     Effect.sync(() =>
