@@ -22,6 +22,18 @@ Reload the provider after login or token refresh and start a new thread. Credent
 refresh is conservatively treated as an account change because local account
 identity cannot be verified without contacting each model provider.
 
+Repository Kilo configuration and external plugins are disabled. Plugins execute
+outside session approval rules, so instance environment settings cannot enable
+them. Configure models in the selected account profile or explicit instance
+configuration instead. Kilo's built-in authentication plugins remain available.
+
+**Known security limitation:** CLI 7.8.3 still imports legacy `.kilo/mcp.json` and
+`.kilocode/mcp.json` despite disabling project configuration. Their MCP commands
+can start before session permission checks. The CLI has no supported blanket MCP
+disable, and configuration reloads make a preflight check insufficient. Restricted
+execution is therefore not safe for untrusted repositories with these settings.
+Disabling external plugins does not resolve this separate limitation.
+
 Prompts run in the selected T3 workspace. Use separate T3 worktrees for tasks that
 must not share files. Separate conversation IDs alone do not isolate a checkout.
 Stop terminates the task's owned local process group. A later prompt can restore

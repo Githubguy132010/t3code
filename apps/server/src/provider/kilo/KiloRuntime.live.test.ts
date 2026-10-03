@@ -7,6 +7,7 @@ import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
 import * as Scope from "effect/Scope";
+import * as Schema from "effect/Schema";
 import { describe } from "vite-plus/test";
 
 import * as KiloRuntime from "./KiloRuntime.ts";
@@ -15,6 +16,7 @@ import * as ServerConfig from "../../config.ts";
 import * as IdAllocator from "../../orchestration-v2/IdAllocator.ts";
 
 const binary = process.env.KILO_BIN;
+const encodeJson = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
 const environment = {
   PATH: process.env.PATH,
   HTTP_PROXY: process.env.HTTP_PROXY,
@@ -28,6 +30,47 @@ const environment = {
 };
 
 describe.runIf(binary !== undefined)("KiloRuntime native lifecycle", () => {
+  it.live(
+    "does not execute repository or external plugins before session permissions",
+    () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const root = yield* fs.makeTempDirectoryScoped({ prefix: "t3-kilo-plugin-" });
+        const cwd = path.join(root, "checkout");
+        const pluginDir = path.join(cwd, ".kilo", "plugins");
+        yield* fs.makeDirectory(pluginDir, { recursive: true });
+        const marker = path.join(root, "repository-plugin-ran");
+        const explicitMarker = path.join(root, "explicit-plugin-ran");
+        const body = (target: string) =>
+          `import { writeFileSync } from "node:fs";\nwriteFileSync(${encodeJson(target)}, "executed");\nexport const fixture = async () => ({});\n`;
+        yield* fs.writeFileString(path.join(pluginDir, "unsafe.ts"), body(marker));
+        const explicitPlugin = path.join(root, "explicit.ts");
+        yield* fs.writeFileString(explicitPlugin, body(explicitMarker));
+        // A profile override must not reopen the approval bypass.
+        const runtime = yield* KiloRuntime.make({
+          instanceId: "plugins",
+          binaryPath: binary!,
+          profileDirectory: path.join(root, "profile"),
+          environment: {
+            ...environment,
+            KILO_DISABLE_PROJECT_CONFIG: "0",
+            KILO_PURE: "0",
+            KILO_CONFIG_CONTENT: encodeJson({ plugin: [explicitPlugin] }),
+          },
+        });
+        const connection = yield* runtime.open(cwd);
+        yield* connection.client.models();
+        const ref = yield* connection.client.create([
+          { permission: "*", pattern: "*", action: "ask" },
+        ]);
+        assert.equal((yield* connection.client.read(ref)).id, ref.sessionId);
+        assert.isFalse(yield* fs.exists(marker));
+        assert.isFalse(yield* fs.exists(explicitMarker));
+      }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+    { timeout: 30000 },
+  );
+
   it.live(
     "retires live clients and rejects saved threads after credentials change in the same profile",
     () =>

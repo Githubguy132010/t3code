@@ -107,6 +107,10 @@ export const make = Effect.fn("KiloRuntime.make")(function* (input: {
     XDG_CACHE_HOME: path.join(profile, "cache"),
     XDG_STATE_HOME: path.join(profile, "state"),
     KILO_DISABLE_AUTOUPDATE: "1",
+    // Repository config and external plugins execute before session permissions.
+    // Keep these forced after instance overrides, including in Full access.
+    KILO_DISABLE_PROJECT_CONFIG: "1",
+    KILO_PURE: "1",
     // Background children outlive root turns and need a separate T3 continuation contract.
     KILO_EXPERIMENTAL_BACKGROUND_SUBAGENTS: "false",
     KILO_SERVER_USERNAME: "kilo",
