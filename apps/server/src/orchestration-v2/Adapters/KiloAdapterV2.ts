@@ -160,7 +160,7 @@ const wire = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
     ),
   );
 
-// Kilo 7.8.3 task.ts persists inherited edit/bash/MCP ceilings before launching a child.
+// Native tool rules are approval policy, not process or MCP-start isolation.
 const permissions = (policy: Adapter.ProviderAdapterV2RuntimePolicy) => {
   const rules = openCodePermissionRules(policy);
   // Kilo re-appends session denies in Plan and inherits them into children. OpenCode's

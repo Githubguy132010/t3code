@@ -1,66 +1,89 @@
 # Kilo
 
-Local Kilo execution is disabled in this preview. T3 refuses every local process
-start, including provider checks, new prompts, text generation and restored
-sessions. CLI 7.8.3 can start MCP commands and connections before approval despite
-pure mode, disabled project configuration and deny-all session permissions. Both
-legacy project directories and global/profile sources are affected. The Kilo tool
-sandbox does not cover MCP startup or reconnect.
+Add **Kilo** in Settings > Providers, select the Kilo CLI 7.8.3 binary and an
+account profile, then refresh the provider. Profiles isolate credentials and native
+session storage. Sign in with the official Kilo CLI separately; T3 never signs in
+automatically. Changing credentials retires the old runtime and requires a new
+thread. Saved history remains available.
 
-No released runtime has a verified fix. Restoring local support requires an
-explicitly supported dependency with a process-level MCP policy boundary, tested
-across startup, prompts, configuration changes, reconnect and resume. A profile
-scan or disabling known server names is insufficient. T3 does not alter your
-configuration or patch the installed CLI. There is no unsafe-execution override.
-Existing local history and account configuration are retained. The earlier local
-prompt, approval, fork, rewind, subagent and text-generation tests are historical
-conformance evidence, not currently available functionality. Local Kilo and cloud
-parallel execution is consequently blocked. Restricted-mode subagents remain
-disallowed even if local execution is restored.
+## Local configuration and approvals
 
-| Capability                                              | Local Kilo                                     | Kilo Cloud                                                                           |
-| ------------------------------------------------------- | ---------------------------------------------- | ------------------------------------------------------------------------------------ |
-| New prompts and follow-up                               | Blocked before process start                   | Full access only                                                                     |
-| Concurrent isolated threads                             | Blocked                                        | Separate remote worktrees and task identities                                        |
-| Local/cloud parallel tasks                              | Blocked                                        | Requires a safe local runtime                                                        |
-| History and recovery                                    | Stored history retained; native resume blocked | Durable task identity, paginated admission recovery; no blind resubmit               |
-| Stop                                                    | No local process starts                        | Requests inference interruption; sleep and compute observed separately               |
-| Approvals and questions                                 | Blocked                                        | Handles interactions emitted by the remote runtime; cannot enforce restricted policy |
-| Rewind, fork, local files, checkpoints, text generation | Blocked                                        | Not supported                                                                        |
-| Subagents                                               | Blocked                                        | Remote Full access may execute them; child history not integrated                    |
-| Web, desktop and mobile                                 | Shows execution-blocked status                 | Selection, account/model settings and task status; local workspace controls disabled |
+Like T3's OpenCode provider, Kilo trusts native runtime configuration, plugins and
+MCP servers. Only open repositories and profiles whose configuration you trust.
+Configured MCP processes or connections can start before a model tool call or
+approval. Supervised and Plan modes govern supported tool calls; they are not an
+OS sandbox and do not isolate native configuration or MCP initialization.
 
-For remote execution, add a separate **Kilo Cloud** instance in Settings > Providers.
-Select a profile signed in through the official Kilo login, a GitHub repository that
-account can access, its branch, and a model. Enable paid cloud execution only when
-you want prompts and that repository sent to Kilo. T3 never uploads your local
-checkout or uncommitted changes. Each cloud thread has its own remote worktree. Local Kilo concurrency awaits a
-safe native runtime.
+Kilo 7.8.3 loads legacy `.kilo/mcp.json` and `.kilocode/mcp.json` even when
+`KILO_DISABLE_PROJECT_CONFIG` is enabled. `KILO_PURE` suppresses external plugins,
+not all MCP loading. T3 does not force either flag as a security boundary, rewrite
+configuration, or patch the installed runtime. Explicit native settings remain
+trusted. Background subagents stay disabled. Foreground child agents require Full
+access because Kilo does not inherit parent `ask` rules reliably.
 
-Cloud execution currently requires **Full access**. The deployed cloud runtime
-does not apply custom agent permissions, so T3 refuses restricted and Plan modes
-before submitting a paid task. Shell, edits and subagents cannot be restricted in
-cloud Full access. Cloud subagent history is not integrated. Local Kilo is also unavailable while the runtime safety gate is in place. Inherited Kilo profiles with setup,
+T3 stops owned processes on normal shutdown. On Linux and macOS, it records their
+process identity and reaps processes from a dead T3 owner when the same profile
+is reopened. Cleanup checks the recorded PID, start time, command and owner;
+it never kills by executable name. Crash recovery on macOS and native Windows
+process cleanup have not been verified in this environment.
+
+| Capability                                 | Local Kilo                                                | Kilo Cloud                                                                              |
+| ------------------------------------------ | --------------------------------------------------------- | --------------------------------------------------------------------------------------- |
+| Prompts and follow-up                      | Native streaming, tools and reasoning                     | Full access; history updates, no token-streaming claim                                  |
+| Concurrent sessions                        | Separate processes and account profiles                   | Separate task identities and remote worktrees; runs alongside local sessions            |
+| History and recovery                       | Native history and resume                                 | Durable admission and result recovery; no blind paid resubmission                       |
+| Stop                                       | Native abort and owned-process cleanup                    | Inference interrupt while running; local retrieval cancellation after remote completion |
+| Approvals and questions                    | Native supported tool approvals and questions             | Handles emitted interactions; cannot enforce restricted policy                          |
+| Rewind, fork, checkpoints, text generation | Integrated with native sessions and T3 checkpoints        | Not supported                                                                           |
+| Subagents                                  | Foreground Full access only; restricted modes denied      | Remote Full access may run them; child history not integrated                           |
+| Clients                                    | Web/desktop/mobile selection, models, status and controls | Account/repository/model settings and task status; local workspace actions disabled     |
+
+## Cloud execution and costs
+
+Add a separate **Kilo Cloud** instance in Settings > Providers. Select a profile
+signed in through the official Kilo login, an accessible GitHub repository, its
+branch and a model. Personal accounts are supported. Enabling paid cloud execution
+allows prompts and that remote repository to be sent to Kilo. T3 never uploads
+local checkout files or uncommitted changes. Each cloud thread has a remote worktree.
+
+Cloud requires **Full access**. The deployed runtime does not apply custom agent
+permissions, so T3 rejects restricted and Plan modes before paid admission. Remote
+shell commands, edits and subagents can run. Automatic commits are disabled, but
+this is not a read-only execution policy. Profiles with inherited setup commands,
 MCP, skills, agents or environment variables are rejected before a new cloud task.
+The local trust choice does not relax this cloud restriction.
 
-Cloud prompts, native history and follow-up messages use the same remote session.
-T3 reconnects by its saved task identity and does not automatically resend an
-uncertain start. A cloud thread cannot use local attachments, terminals, file
-checkpoints, rewind, forks or background text generation. Switching accounts does
-not transfer existing tasks or stop them.
+A cloud thread cannot use local attachments, terminals, Git actions, checkpoints,
+rewind, forks or background text generation. Switching accounts does not transfer
+existing tasks or stop them. Reconnecting uses the saved task identity. Uncertain
+admission is reconciled through paginated customer APIs, never automatically resent.
 
-Cloud tasks spend Kilo credit for inference and sandbox use. Automatic commits are
-disabled, but an agent in Full access can still modify the remote checkout. Stop
-requests inference interruption; closing a stream, task completion and sandbox
-sleep are separate events. The thread shows task, sandbox and compute status
-separately. Compute estimates can cover a shared account sandbox and are not a
-per-task invoice. Unknown or settling status does not mean billing has stopped.
-T3 does not top up credit or force a sandbox to sleep.
+Cloud tasks spend Kilo credit for inference and sandbox use. Inference interruption,
+a closed stream, remote completion and sandbox sleep are separate events. Task,
+result, sandbox and compute status are shown separately. Compute estimates can cover
+a shared account sandbox and are not a per-task invoice. Unknown or settling status
+does not mean billing has stopped. T3 does not top up credit or force sandbox sleep.
 
-Admission recovery retains scan progress and follows customer API cursors. An
-unresolved start remains uncertain and is not automatically submitted again.
-If the remote API reports completion without the corresponding final reply,
-T3 keeps the turn unresolved instead of inventing a successful result. This
-recovery case still needs a verified terminal contract; inspect the task in Kilo.
-A failed or interrupted task can finish even if its history is incomplete.
-Reopening the thread can retry history retrieval.
+## Results after remote completion
+
+The customer `workspace_` API reports execution status separately from history.
+T3 marks a completed task `awaiting_result` until it retrieves output correlated to
+the original message, account, worktree and native session. A completed, textless
+assistant or terminal tool-only outcome is valid; unrelated replies, unfinished
+tools and outstanding interactions cannot finish the local turn.
+
+Retrieval reads at most four pages per attempt, with a 100-cursor cycle limit,
+backoff up to 30 seconds and a five-minute recovery window. Progress, next attempt
+and deadline survive restart. A confirmed outstanding interaction gives the user
+time to respond and renews that window. Missing output after the window produces a
+specific local result-retrieval failure while preserving remote `completed`.
+Reopening history can retrieve a late result without restarting the failed turn,
+duplicating its messages or submitting a new paid task.
+
+Stop while `awaiting_result` cancels local result retrieval. It does not send a
+remote interrupt or claim the sandbox is sleeping. Stop during running inference
+requests remote interruption and waits for confirmation; billing remains separate.
+
+Local/cloud concurrency and recovery are covered by actual local CLI sessions and
+loopback customer-contract tests. These do not replace live verification of every
+deployed cloud behavior or native platform testing.

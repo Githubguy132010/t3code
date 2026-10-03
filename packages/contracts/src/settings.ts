@@ -977,7 +977,8 @@ export const KiloSettings = makeProviderSettingsSchema(
     binaryPath: makeBinaryPathSetting("kilo").pipe(
       Schema.annotateKey({
         title: "Binary path",
-        description: "Kilo CLI 7.8.3 executable.",
+        description:
+          "Kilo CLI 7.8.3 executable. Native configuration, plugins and MCP servers are trusted. Tool approvals are not an OS sandbox.",
         providerSettingsForm: { placeholder: "kilo", clearWhenEmpty: "omit" },
       }),
     ),

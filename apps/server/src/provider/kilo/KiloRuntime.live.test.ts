@@ -1,3 +1,8 @@
+// @effect-diagnostics nodeBuiltinImport:off - real owner crash fixture.
+import * as NodeChildProcess from "node:child_process";
+import * as NodeEvents from "node:events";
+import * as NodeURL from "node:url";
+import { HostProcessPlatform } from "@t3tools/shared/hostProcess";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
 import { ProviderInstanceId, ProviderSessionId, ThreadId } from "@t3tools/contracts";
@@ -16,6 +21,15 @@ import * as ServerConfig from "../../config.ts";
 import * as IdAllocator from "../../orchestration-v2/IdAllocator.ts";
 
 const binary = process.env.KILO_BIN;
+const platform = HostProcessPlatform.defaultValue();
+const decodeGroup = Schema.decodeUnknownEffect(
+  Schema.fromJsonString(Schema.Struct({ pgid: Schema.Number })),
+);
+const decodeOwner = Schema.decodeUnknownEffect(
+  Schema.fromJsonString(
+    Schema.Struct({ owner: Schema.Struct({ pid: Schema.Number }), pgid: Schema.Number }),
+  ),
+);
 const encodeJson = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
 const environment = {
   PATH: process.env.PATH,
@@ -29,10 +43,9 @@ const environment = {
   KILO_DISABLE_PROJECT_CONFIG: "1",
 };
 
-// Historical native conformance coverage. Re-enable only after an audited MCP runtime fix.
-describe.skip("KiloRuntime native lifecycle", () => {
+describe.skipIf(!binary)("KiloRuntime native lifecycle", () => {
   it.live(
-    "does not execute repository or external plugins before session permissions",
+    "loads explicitly trusted repository and external plugins before tool approvals",
     () =>
       Effect.gen(function* () {
         const fs = yield* FileSystem.FileSystem;
@@ -44,17 +57,18 @@ describe.skip("KiloRuntime native lifecycle", () => {
         const marker = path.join(root, "repository-plugin-ran");
         const explicitMarker = path.join(root, "explicit-plugin-ran");
         const body = (target: string) =>
-          `import { writeFileSync } from "node:fs";\nwriteFileSync(${encodeJson(target)}, "executed");\nexport const fixture = async () => ({});\n`;
+          `import { writeFileSync } from "node:fs";\nimport { spawn } from "node:child_process";\nconst child = spawn(${encodeJson(process.execPath)}, ["-e", "setInterval(()=>{},1000)"], {stdio:"ignore"});\nwriteFileSync(${encodeJson(target)}, String(child.pid));\nexport const fixture = async () => ({});\n`;
         yield* fs.writeFileString(path.join(pluginDir, "unsafe.ts"), body(marker));
         const explicitPlugin = path.join(root, "explicit.ts");
         yield* fs.writeFileString(explicitPlugin, body(explicitMarker));
-        // A profile override must not reopen the approval bypass.
+        // Native configuration is explicitly trusted, independently of tool approvals.
         const runtime = yield* KiloRuntime.make({
           instanceId: "plugins",
           binaryPath: binary!,
           profileDirectory: path.join(root, "profile"),
           environment: {
             ...environment,
+            HOME: root,
             KILO_DISABLE_PROJECT_CONFIG: "0",
             KILO_PURE: "0",
             KILO_CONFIG_CONTENT: encodeJson({ plugin: [explicitPlugin] }),
@@ -66,8 +80,30 @@ describe.skip("KiloRuntime native lifecycle", () => {
           { permission: "*", pattern: "*", action: "ask" },
         ]);
         assert.equal((yield* connection.client.read(ref)).id, ref.sessionId);
-        assert.isFalse(yield* fs.exists(marker));
-        assert.isFalse(yield* fs.exists(explicitMarker));
+        assert.isTrue(yield* fs.exists(marker));
+        assert.isTrue(yield* fs.exists(explicitMarker));
+        if (platform === "linux") {
+          const ledgerDir = path.join(root, "profile", "t3-processes", "opencode-servers");
+          const entry = (yield* fs.readDirectory(ledgerDir))[0]!;
+          const recorded = yield* decodeGroup(
+            yield* fs.readFileString(path.join(ledgerDir, entry)),
+          );
+          const descendants = [
+            Number(yield* fs.readFileString(marker)),
+            Number(yield* fs.readFileString(explicitMarker)),
+          ];
+          const running = (pid: number) =>
+            fs.readFileString(`/proc/${pid}/stat`).pipe(
+              Effect.map((stat) => !stat.slice(stat.lastIndexOf(")") + 2).startsWith("Z")),
+              Effect.orElseSucceed(() => false),
+            );
+          for (const pid of descendants) assert.isTrue(yield* running(pid));
+          // Kill only the recorded owned leader while its session is idle. Exit
+          // observation must clean up descendants without an active-turn error.
+          process.kill(recorded.pgid, "SIGKILL");
+          yield* connection.exitCode;
+          for (const pid of descendants) assert.isFalse(yield* running(pid));
+        }
       }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
     { timeout: 30000 },
   );
@@ -88,7 +124,7 @@ describe.skip("KiloRuntime native lifecycle", () => {
           instanceId: "account-test",
           binaryPath: binary!,
           profileDirectory: root,
-          environment,
+          environment: { ...environment, HOME: root },
         });
         const connection = yield* runtime.open(root);
         const native = yield* connection.client.create([]);
@@ -97,7 +133,7 @@ describe.skip("KiloRuntime native lifecycle", () => {
           displayName: undefined,
           enabled: false,
           config: { ...KiloDriver.defaultConfig(), binaryPath: binary!, profileDirectory: root },
-          environment: Object.entries(environment).flatMap(([name, value]) =>
+          environment: Object.entries({ ...environment, HOME: root }).flatMap(([name, value]) =>
             value === undefined ? [] : [{ name, value, sensitive: false }],
           ),
         });
@@ -183,13 +219,13 @@ describe.skip("KiloRuntime native lifecycle", () => {
           instanceId: "personal",
           binaryPath: binary!,
           profileDirectory: path.join(root, "personal"),
-          environment,
+          environment: { ...environment, HOME: root },
         }).pipe(Effect.provideService(Scope.Scope, accountScope));
         const work = yield* KiloRuntime.make({
           instanceId: "work",
           binaryPath: binary!,
           profileDirectory: path.join(root, "work-account"),
-          environment,
+          environment: { ...environment, HOME: root },
         });
         const sessionScope = yield* Scope.fork(yield* Effect.scope);
         const first = yield* runtime
@@ -215,6 +251,97 @@ describe.skip("KiloRuntime native lifecycle", () => {
     { timeout: 30000 },
   );
 
+  it.live.skipIf(platform !== "linux")(
+    "reaps a real Kilo process after its T3 owner is killed and resumes its session",
+    () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const profile = yield* fs.makeTempDirectoryScoped({ prefix: "t3-kilo-crash-" });
+        let group: number | undefined;
+        const owner = yield* Effect.acquireRelease(
+          Effect.sync(() =>
+            NodeChildProcess.spawn(
+              process.execPath,
+              [
+                NodeURL.fileURLToPath(new URL("./KiloRuntime.crash.fixture.mjs", import.meta.url)),
+                binary!,
+                profile,
+              ],
+              { stdio: ["ignore", "ignore", "ignore", "ipc"] },
+            ),
+          ),
+          (child) =>
+            Effect.sync(() => {
+              child.kill("SIGKILL");
+              if (group !== undefined) {
+                try {
+                  process.kill(-group, "SIGKILL");
+                } catch {
+                  /* already stopped */
+                }
+              }
+            }),
+        );
+        const message = yield* Effect.promise(
+          () =>
+            new Promise<{
+              pid: number;
+              session: { instanceId: string; sessionId: string; directory: string };
+            }>((resolve, reject) => {
+              owner.on("message", (value) => {
+                const message = value as {
+                  type: string;
+                  pid: number;
+                  session: { instanceId: string; sessionId: string; directory: string };
+                };
+                group = message.pid;
+                if (message.type === "ready") resolve(message);
+              });
+              owner.once("exit", () =>
+                reject(new Error("Kilo crash fixture exited before readiness")),
+              );
+              owner.once("error", reject);
+            }),
+        );
+        const entries = yield* fs.readDirectory(
+          path.join(profile, "t3-processes", "opencode-servers"),
+        );
+        assert.equal(entries.length, 1);
+        const recorded = yield* decodeOwner(
+          yield* fs.readFileString(
+            path.join(profile, "t3-processes", "opencode-servers", entries[0]!),
+          ),
+        );
+        assert.equal(recorded.owner.pid, owner.pid);
+        assert.equal(recorded.pgid, group);
+        const exited = NodeEvents.EventEmitter.once(owner, "exit");
+        owner.kill("SIGKILL");
+        yield* Effect.promise(() => exited);
+        const running = (pid: number) =>
+          fs.readFileString(`/proc/${pid}/stat`).pipe(
+            Effect.map((stat) => !stat.slice(stat.lastIndexOf(")") + 2).startsWith("Z")),
+            Effect.orElseSucceed(() => false),
+          );
+        assert.isTrue(yield* running(message.pid));
+        const restarted = yield* KiloRuntime.make({
+          instanceId: "crash-fixture",
+          binaryPath: binary!,
+          profileDirectory: profile,
+          environment: { ...environment, HOME: profile },
+        });
+        assert.isFalse(yield* running(message.pid));
+        assert.deepEqual(
+          yield* fs.readDirectory(path.join(profile, "t3-processes", "opencode-servers")),
+          [],
+        );
+        const fresh = yield* restarted.open(profile);
+        assert.equal((yield* fresh.client.read(message.session)).id, message.session.sessionId);
+        assert.isTrue(yield* fresh.isRunning);
+      }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+    { timeout: 30000 },
+  );
+
   it.live(
     "cleans failed startup and can open a fresh process afterward",
     () =>
@@ -226,7 +353,7 @@ describe.skip("KiloRuntime native lifecycle", () => {
           instanceId: "broken",
           binaryPath: path.join(root, "missing"),
           profileDirectory: root,
-          environment,
+          environment: { ...environment, HOME: root },
         });
         const failure = yield* bad.open(root).pipe(Effect.flip);
         assert.equal(failure.operation, "spawn");
@@ -240,16 +367,17 @@ describe.skip("KiloRuntime native lifecycle", () => {
           instanceId: "early",
           binaryPath: earlyExit,
           profileDirectory: root,
-          environment,
+          environment: { ...environment, HOME: root },
         });
         const earlyFailure = yield* exiting.open(root).pipe(Effect.flip);
         assert.equal(earlyFailure.operation, "startup");
         assert.notInclude(earlyFailure.message, "do-not-leak");
+        assert.include(earlyFailure.message, "code 7");
         const good = yield* KiloRuntime.make({
           instanceId: "working",
           binaryPath: binary!,
           profileDirectory: root,
-          environment,
+          environment: { ...environment, HOME: root },
         });
         const connection = yield* good.open(root);
         assert.isTrue(yield* connection.isRunning);

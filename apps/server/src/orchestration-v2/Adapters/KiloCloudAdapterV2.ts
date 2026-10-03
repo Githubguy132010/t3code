@@ -157,6 +157,8 @@ export const make = Effect.fn("KiloCloudAdapterV2.make")(function* (options: {
   readonly client: ReturnType<typeof Cloud.make>;
   readonly journal: Effect.Success<ReturnType<typeof Journal.make>>;
   readonly allowAdmission?: boolean;
+  /** Bounded local retrieval window, persisted from first remote completion. */
+  readonly resultRecoveryTimeoutMs?: number;
 }) {
   const ids = yield* IdAllocator.IdAllocatorV2;
   const crypto = yield* Crypto.Crypto;
@@ -204,6 +206,7 @@ export const make = Effect.fn("KiloCloudAdapterV2.make")(function* (options: {
       let admissionProbeDelay = 2_000;
       let streamCursor = 0;
       let monitorSandbox = false;
+      let resultStatus: Journal.CloudIntent["resultStatus"];
       let taskState:
         | "not_started"
         | "admission_unknown"
@@ -280,6 +283,7 @@ export const make = Effect.fn("KiloCloudAdapterV2.make")(function* (options: {
       });
       const finish = Effect.fn("KiloCloudAdapterV2.finish")(function* (
         terminal: "completed" | "failed" | "interrupted",
+        resultFailure?: string,
       ) {
         if (!active) return;
         const at = yield* DateTime.now;
@@ -295,7 +299,11 @@ export const make = Effect.fn("KiloCloudAdapterV2.make")(function* (options: {
             status: "idle",
             nativeMetadata: {
               ...thread.nativeMetadata,
-              cloudExecution: { ...thread.nativeMetadata.cloudExecution, task: terminal },
+              cloudExecution: {
+                ...thread.nativeMetadata.cloudExecution,
+                task: saved.remoteState ?? terminal,
+                ...(saved.resultStatus ? { result: saved.resultStatus } : {}),
+              },
             },
           };
           yield* emit({ type: "provider_thread.updated", driver, providerThread: thread });
@@ -348,7 +356,7 @@ export const make = Effect.fn("KiloCloudAdapterV2.make")(function* (options: {
                 failure: makeProviderFailure({
                   class: "provider_error",
                   code: "provider_error",
-                  message: "Kilo Cloud reported a failed task.",
+                  message: resultFailure ?? "Kilo Cloud reported a failed task.",
                 }),
                 threadDisposition: "reusable",
               }
@@ -373,7 +381,8 @@ export const make = Effect.fn("KiloCloudAdapterV2.make")(function* (options: {
         // the thread can retry history independently of the ended turn.
         needsHistoryRestore = false;
         if (!binding) monitorSandbox = false;
-        taskState = terminal;
+        taskState = saved.remoteState ?? terminal;
+        resultStatus = saved.resultStatus;
         yield* Deferred.succeed(terminalSignal, undefined);
       });
       const project = Effect.fn("KiloCloudAdapterV2.project")(function* (
@@ -647,78 +656,201 @@ export const make = Effect.fn("KiloCloudAdapterV2.make")(function* (options: {
           persisted.revision > active.revision
         )
           active = persisted;
-        const outcome = active
-          ? yield* wire(options.client.result(binding, active.messageId))
-          : null;
+        const nowMs = yield* Clock.currentTimeMillis;
+        const previousRecovery = active?.resultRecovery;
+        if (previousRecovery && nowMs < previousRecovery.nextAttemptMs) return;
+        const outcome =
+          active?.remoteState === "completed"
+            ? { status: "completed" as const }
+            : active
+              ? yield* wire(options.client.result(binding, active.messageId))
+              : null;
         if (active?.messageId !== expectedMessageId) return;
-        if (outcome) taskState = outcome.status;
+        if (outcome && active) {
+          taskState = outcome.status;
+          // First observed completion and its deadline are one durable write.
+          if (outcome.status === "completed" && !active.resultRecovery) {
+            yield* save({
+              ...active,
+              remoteState: "completed",
+              state: "awaiting_result",
+              resultStatus: "awaiting_result",
+              resultRecovery: {
+                deadlineMs: nowMs + (options.resultRecoveryTimeoutMs ?? 300_000),
+                nextAttemptMs: nowMs,
+                attempts: 0,
+                cursor: null,
+                seenCursors: [],
+              },
+            });
+            resultStatus = "awaiting_result";
+          } else if (active.remoteState !== outcome.status)
+            yield* save({ ...active, remoteState: outcome.status });
+        }
+        // Reserve the next attempt before I/O, including pending/history failures.
+        if (active?.resultRecovery) {
+          const recovery = active.resultRecovery;
+          yield* save({
+            ...active,
+            resultRecovery: {
+              ...recovery,
+              attempts: recovery.attempts + 1,
+              nextAttemptMs: nowMs + Math.min(2_000 * 2 ** Math.min(recovery.attempts, 4), 30_000),
+            },
+          });
+        }
         const failedOrInterrupted =
           outcome?.status === "failed" || outcome?.status === "interrupted";
-        let cursor: string | undefined;
-        let finalReplySeen = false;
-        const seen = new Set<string>();
+        const expired = !!active?.resultRecovery && nowMs >= active.resultRecovery.deadlineMs;
+        const pending = !failedOrInterrupted
+          ? yield* options.client.pending(binding).pipe(
+              Effect.timeout("3 seconds"),
+              Effect.catch((cause) =>
+                expired || !active ? Effect.succeed(null) : Effect.fail(cause),
+              ),
+              wire,
+            )
+          : null;
+        if (pending && active) {
+          for (const interaction of [...pending.questions, ...pending.permissions])
+            yield* ask(interaction);
+          const stillPending = new Set(
+            [...pending.questions, ...pending.permissions].map((entry) => entry.id),
+          );
+          for (const entry of requests.values())
+            if (entry.runtime.status === "pending" && !stillPending.has(entry.native.id))
+              yield* resolveRequest(entry);
+        }
+        const hasPending = !!pending && pending.questions.length + pending.permissions.length > 0;
+        if (hasPending && active?.resultRecovery) {
+          // Human interaction is not a missing-result failure. Persist a fresh
+          // retrieval window while the customer API confirms it is outstanding.
+          yield* save({
+            ...active,
+            resultRecovery: {
+              ...active.resultRecovery,
+              deadlineMs: Math.max(
+                active.resultRecovery.deadlineMs,
+                nowMs + (options.resultRecoveryTimeoutMs ?? 300_000),
+              ),
+            },
+          });
+        }
+        if (expired) {
+          if (hasPending) {
+            yield* status(
+              "Kilo Cloud has an outstanding interaction. Remote completion does not resolve it.",
+            );
+          } else {
+            yield* save({ ...active!, resultStatus: "unavailable" });
+            yield* finish(
+              "failed",
+              "Kilo Cloud completed remotely, but its correlated result could not be retrieved before the recovery deadline. Reopen history to retrieve a late result; no task was resubmitted.",
+            ).pipe(Effect.uninterruptible);
+          }
+          return;
+        }
+        // A terminal local run may still receive a late result. Explicit history
+        // refresh advances the same durable cursor without restarting the run.
+        let target = active ?? intents.at(-1);
+        const recovery =
+          target?.resultRecovery ??
+          (target && !active
+            ? {
+                deadlineMs: nowMs,
+                nextAttemptMs: nowMs,
+                attempts: 0,
+                cursor: null,
+                seenCursors: [],
+                completeReplySeen: false,
+                incompleteReplySeen: false,
+              }
+            : undefined);
+        let cursor: string | undefined = recovery?.cursor ?? undefined;
+        let completeReplySeen = recovery?.completeReplySeen ?? false;
+        let incompleteReplySeen = recovery?.incompleteReplySeen ?? false;
+        let scanComplete = false;
+        let resetScan = false;
+        const seen = new Set(recovery?.seenCursors ?? []);
         const readHistory = Effect.gen(function* () {
-          do {
+          for (let pages = 0; pages < 4; pages++) {
             const page = yield* wire(options.client.history(binding!, cursor));
-            if (page.history === null) break;
+            if (page.history === null) return;
             if (page.history.omittedItemCount > 0)
-              return yield* error(
-                "Kilo Cloud history is incomplete; remote task state is still unknown.",
-              );
+              return yield* error("Kilo Cloud result history is incomplete.");
             for (const message of page.history.messages) {
               yield* project(message, intents);
-              if (
-                message.info.parentID === expectedMessageId &&
+              if (message.info.role !== "assistant" || message.info.parentID !== target?.messageId)
+                continue;
+              const complete =
                 message.info.time.completed !== undefined &&
-                message.info.finish &&
-                message.info.finish !== "tool-calls"
-              )
-                finalReplySeen = true;
+                message.parts.every(
+                  (part) =>
+                    part.type !== "tool" ||
+                    ["completed", "error"].includes(String(part.state?.status)),
+                );
+              if (complete) completeReplySeen = true;
+              else incompleteReplySeen = true;
             }
             cursor =
               active &&
-              page.history.messages.some((message) => message.info.id === expectedMessageId)
+              page.history.messages.some((message) => message.info.id === target?.messageId)
                 ? undefined
                 : (page.history.nextCursor ?? undefined);
-            if (cursor && seen.has(cursor))
-              return yield* error("Kilo Cloud returned a repeated history cursor.");
-            if (cursor) seen.add(cursor);
-          } while (cursor);
-          needsHistoryRestore = false;
+            if (!cursor) {
+              scanComplete = true;
+              return;
+            }
+            if (seen.has(cursor) || seen.size >= 100) {
+              resetScan = true;
+              return yield* error(
+                "Kilo Cloud result history exceeded its cursor budget or repeated a cursor.",
+              );
+            }
+            seen.add(cursor);
+          }
         });
         if (failedOrInterrupted) {
-          needsHistoryRestore = true;
-          // Confirmed termination survives unavailable bootstrap history, but retain any
-          // output produced while this client was disconnected before closing the turn.
           yield* readHistory.pipe(Effect.timeout("5 seconds"), Effect.ignore);
           yield* finish(outcome.status as "failed" | "interrupted").pipe(Effect.uninterruptible);
           return;
         }
-        yield* readHistory;
-        if (active && active.messageId === expectedMessageId) {
-          const pending = yield* wire(options.client.pending(binding));
-          if (active?.messageId !== expectedMessageId) return;
-          for (const interaction of [...pending.questions, ...pending.permissions])
-            yield* ask(interaction);
-          const stillPending = new Set(
-            [...pending.questions, ...pending.permissions].map((request) => request.id),
-          );
-          for (const entry of requests.values()) {
-            if (entry.runtime.status === "pending" && !stillPending.has(entry.native.id)) {
-              yield* resolveRequest(entry);
-            }
-          }
-          const result = outcome;
-          if (active?.messageId !== expectedMessageId) return;
-          if (result) taskState = result.status;
-          if (
-            result &&
-            result.status !== "queued" &&
-            result.status !== "running" &&
-            (result.status !== "completed" || finalReplySeen)
-          )
-            yield* finish(result.status).pipe(Effect.uninterruptible);
+        if (recovery) yield* readHistory.pipe(Effect.timeout("5 seconds"), Effect.ignore);
+        else yield* readHistory;
+        const available =
+          scanComplete &&
+          completeReplySeen &&
+          !incompleteReplySeen &&
+          pending !== null &&
+          !hasPending;
+        if (target && recovery) {
+          const updated = {
+            ...target,
+            ...(available ? { resultStatus: "available" as const } : {}),
+            resultRecovery: {
+              ...recovery,
+              cursor: scanComplete || resetScan ? null : (cursor ?? null),
+              seenCursors: scanComplete || resetScan ? [] : [...seen],
+              completeReplySeen: scanComplete || resetScan ? false : completeReplySeen,
+              incompleteReplySeen: scanComplete || resetScan ? false : incompleteReplySeen,
+            },
+          };
+          // Use the latest revision after reserving this attempt above.
+          target = active
+            ? yield* save({ ...updated, revision: active.revision })
+            : yield* wire(options.journal.save(updated));
+          if (!active) resultStatus = target.resultStatus;
         }
+        if (active?.remoteState === "completed" && available) {
+          yield* finish("completed").pipe(Effect.uninterruptible);
+        } else if (active?.state === "awaiting_result") {
+          yield* status(
+            hasPending
+              ? "Kilo Cloud has an outstanding interaction. Remote completion does not resolve it."
+              : "Kilo Cloud completed remotely. Awaiting its correlated result; Stop cancels result retrieval only.",
+          );
+        }
+        needsHistoryRestore = active !== undefined && !scanComplete && !!cursor;
       });
       const lifecycle = Effect.gen(function* () {
         if (!thread || !binding) return;
@@ -736,6 +868,7 @@ export const make = Effect.fn("KiloCloudAdapterV2.make")(function* (options: {
           sessionId: binding.cloudAgentSessionId,
           worktreeId: binding.worktreeId,
           task: taskState,
+          ...(resultStatus ? { result: resultStatus } : {}),
           sandbox: sandbox?.status ?? ("unknown" as const),
           billing: billing?.phase ?? ("unknown" as const),
           billingAttribution: billing?.attribution ?? null,
@@ -820,7 +953,9 @@ export const make = Effect.fn("KiloCloudAdapterV2.make")(function* (options: {
                 .pipe(
                   Effect.catch(() =>
                     status(
-                      "Cloud connection unavailable. Task and billing status are unknown; no prompt was resubmitted.",
+                      taskState === "completed"
+                        ? "Cloud result retrieval is unavailable. Remote execution completed; sandbox and billing are separate. No prompt was resubmitted."
+                        : "Cloud connection unavailable. Task and billing status are unknown; no prompt was resubmitted.",
                     ),
                   ),
                 );
@@ -909,10 +1044,20 @@ export const make = Effect.fn("KiloCloudAdapterV2.make")(function* (options: {
         )
           return yield* error("Cloud journal belongs to another account or repository.");
         binding = last?.binding ?? undefined;
-        taskState = last?.state === "active" ? "unknown" : (last?.state ?? "not_started");
+        taskState =
+          last?.remoteState ??
+          (last?.state === "awaiting_result"
+            ? "completed"
+            : last?.state === "active"
+              ? "unknown"
+              : (last?.state ?? "not_started"));
+        resultStatus = last?.resultStatus;
         monitorSandbox = !!last?.binding;
         active =
-          last && (last.state === "active" || last.state === "admission_unknown")
+          last &&
+          (last.state === "active" ||
+            last.state === "admission_unknown" ||
+            last.state === "awaiting_result")
             ? last
             : undefined;
         if (binding) thread = { ...thread, nativeThreadRef: nativeRef(binding.kiloSessionId) };
@@ -973,9 +1118,19 @@ export const make = Effect.fn("KiloCloudAdapterV2.make")(function* (options: {
                   saved.state === "failed" ||
                   saved.state === "interrupted"
                 ) {
+                  active = undefined;
                   needsHistoryRestore = true;
                   yield* reconcile().pipe(Effect.timeout("10 seconds"), Effect.ignore);
-                  if (active) yield* finish(saved.state);
+                  active =
+                    (yield* wire(options.journal.readThread(thread!.id))).find(
+                      (entry) => entry.operationKey === saved.operationKey,
+                    ) ?? saved;
+                  yield* finish(
+                    saved.state,
+                    saved.resultStatus === "unavailable"
+                      ? "Kilo Cloud completed remotely, but its result was unavailable before the recovery deadline."
+                      : undefined,
+                  );
                 }
                 yield* watch;
                 return;
@@ -1080,17 +1235,20 @@ export const make = Effect.fn("KiloCloudAdapterV2.make")(function* (options: {
               };
               if (!(yield* wire(options.journal.reserve(intent))))
                 return yield* error("A previous cloud admission still needs reconciliation.");
+              resultStatus = undefined;
               active = intent;
               taskState = "admission_unknown";
               monitorSandbox = true;
               thread = providerThread;
               if (thread.nativeMetadata?.cloudExecution) {
+                const cloudExecution = { ...thread.nativeMetadata.cloudExecution };
+                delete cloudExecution.result;
                 thread = {
                   ...thread,
                   nativeMetadata: {
                     ...thread.nativeMetadata,
                     cloudExecution: {
-                      ...thread.nativeMetadata.cloudExecution,
+                      ...cloudExecution,
                       task: taskState,
                       sandbox: "unknown",
                       billing: "unknown",
@@ -1149,6 +1307,14 @@ export const make = Effect.fn("KiloCloudAdapterV2.make")(function* (options: {
               Effect.gen(function* () {
                 yield* owned(request.providerThread);
                 if (!active || active.providerTurn.id !== request.providerTurnId) return false;
+                if (active.state === "awaiting_result") {
+                  yield* save({ ...active, resultStatus: "cancelled" });
+                  yield* finish("interrupted");
+                  yield* status(
+                    "Result retrieval cancelled locally. Kilo already reported completion; sandbox and billing were not stopped.",
+                  );
+                  return false;
+                }
                 if (!binding)
                   return yield* error(
                     "Cloud admission has no confirmed session ID. Remote Stop is unavailable; task and billing status remain unknown.",
@@ -1200,10 +1366,13 @@ export const make = Effect.fn("KiloCloudAdapterV2.make")(function* (options: {
                 Effect.timeout("10 seconds"),
                 Effect.mapError(() =>
                   error(
-                    "Cloud history is temporarily unavailable. Remote execution may still be active.",
+                    taskState === "completed"
+                      ? "Cloud history is unavailable. Remote execution completed; sandbox and billing are separate."
+                      : "Cloud history is temporarily unavailable. Remote execution may still be active.",
                   ),
                 ),
               );
+              yield* lifecycle;
               const intents = yield* wire(options.journal.readThread(thread!.id));
               return {
                 providerThread: thread!,

@@ -798,6 +798,9 @@ export type OrchestrationV2PendingBackgroundTask = typeof OrchestrationV2Pending
 export const OrchestrationV2ProviderThreadNativeMetadata = Schema.Struct({
   cloudExecution: Schema.optional(
     Schema.Struct({
+      result: Schema.optional(
+        Schema.Literals(["awaiting_result", "available", "unavailable", "cancelled"]),
+      ),
       repository: Schema.String,
       branch: Schema.String,
       sessionId: Schema.NullOr(Schema.String),

@@ -29,7 +29,31 @@ export const CloudIntent = Schema.Struct({
       kiloSessionId: Schema.NonEmptyString,
     }),
   ),
-  state: Schema.Literals(["admission_unknown", "active", "completed", "failed", "interrupted"]),
+  state: Schema.Literals([
+    "admission_unknown",
+    "active",
+    "awaiting_result",
+    "completed",
+    "failed",
+    "interrupted",
+  ]),
+  remoteState: Schema.optional(
+    Schema.Literals(["queued", "running", "completed", "failed", "interrupted"]),
+  ),
+  resultStatus: Schema.optional(
+    Schema.Literals(["awaiting_result", "available", "unavailable", "cancelled"]),
+  ),
+  resultRecovery: Schema.optional(
+    Schema.Struct({
+      deadlineMs: Schema.Number,
+      nextAttemptMs: Schema.Number,
+      attempts: Schema.Number,
+      cursor: Schema.NullOr(Schema.String),
+      seenCursors: Schema.Array(Schema.String),
+      completeReplySeen: Schema.optional(Schema.Boolean),
+      incompleteReplySeen: Schema.optional(Schema.Boolean),
+    }),
+  ),
   interruptRequested: Schema.Boolean,
   answeredRequestIds: Schema.Array(Schema.String),
   providerThread: OrchestrationV2ProviderThread,
@@ -71,7 +95,7 @@ export const make = Effect.fn("KiloCloudJournal.make")(function* (directory: str
     yield* sql`PRAGMA synchronous = FULL`;
     yield* sql`CREATE TABLE IF NOT EXISTS intents (operation_key TEXT PRIMARY KEY, thread_id TEXT NOT NULL, state TEXT NOT NULL, body TEXT NOT NULL)`;
     yield* sql`CREATE INDEX IF NOT EXISTS cloud_intents_thread ON intents(thread_id)`;
-    yield* sql`CREATE UNIQUE INDEX IF NOT EXISTS one_active_cloud_intent ON intents(thread_id) WHERE state IN ('active', 'admission_unknown')`;
+    yield* sql`CREATE UNIQUE INDEX IF NOT EXISTS one_active_cloud_intent_v2 ON intents(thread_id) WHERE state IN ('active', 'admission_unknown', 'awaiting_result')`;
   }).pipe(Effect.mapError((cause) => new CloudJournalError({ operation: "write", cause })));
   const read = Effect.gen(function* () {
     const rows = yield* sql<{ body: string }>`SELECT body FROM intents ORDER BY rowid`;

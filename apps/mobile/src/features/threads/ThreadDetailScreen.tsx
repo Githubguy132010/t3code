@@ -1276,8 +1276,9 @@ export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: Thread
                     </AppText>
                     <AppText>
                       Last observation: {cloudExecution.observedAt ?? "unavailable"}. Task:{" "}
-                      {cloudExecution.task}. Sandbox: {cloudExecution.sandbox}. Compute:{" "}
-                      {cloudExecution.billing}
+                      {cloudExecution.task}.{" "}
+                      {cloudExecution.result ? `Result: ${cloudExecution.result}. ` : ""}Sandbox:{" "}
+                      {cloudExecution.sandbox}. Compute: {cloudExecution.billing}
                       {cloudExecution.billingAttribution === "payer_shared"
                         ? " (shared account)"
                         : ""}

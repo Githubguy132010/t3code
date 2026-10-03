@@ -15,6 +15,7 @@ import { resolveSpawnCommand } from "@t3tools/shared/shell";
 
 import { signalProcessGroup } from "../../process/processGroup.ts";
 import * as KiloSessionClient from "./KiloSessionClient.ts";
+import * as ServerLedger from "../OpenCodeServerLedger.ts";
 
 export class KiloRuntimeError extends Schema.TaggedError<KiloRuntimeError>()("KiloRuntimeError", {
   operation: Schema.String,
@@ -42,6 +43,8 @@ export class KiloRuntime extends Context.Service<
     ) => Effect.Effect<KiloConnection, KiloRuntimeError, Scope.Scope>;
   }
 >()("t3/provider/kilo/KiloRuntime") {}
+
+const isRuntimeError = Schema.is(KiloRuntimeError);
 
 const authSchema = Schema.fromJsonString(Schema.Record(Schema.String, Schema.Unknown));
 const decodeAuth = Schema.decodeUnknownEffect(authSchema);
@@ -81,17 +84,6 @@ export const readAuth = Effect.fn("KiloRuntime.readAuth")(function* (
   );
 });
 
-// No released runtime has a verified pre-connect MCP policy boundary. This gate
-// deliberately has no environment/config override. Restore execution only with
-// an audited dependency and real-process startup/reload/reconnect tests.
-export const localExecutionBlocked = new KiloRuntimeError({
-  operation: "runtime-safety",
-  detail:
-    "Local Kilo execution is disabled: CLI 7.8.3 can start MCP commands and connections before approval. A verified runtime fix is required.",
-});
-const requireSafeRuntime: Effect.Effect<void, KiloRuntimeError> =
-  Effect.fail(localExecutionBlocked);
-
 /** Every open owns a process. Registry replacement closes the old account's process scopes. */
 export const make = Effect.fn("KiloRuntime.make")(function* (input: {
   readonly instanceId: string;
@@ -110,6 +102,8 @@ export const make = Effect.fn("KiloRuntime.make")(function* (input: {
   const fail = (operation: string, detail: string) => (cause: unknown) =>
     new KiloRuntimeError({ operation, detail, cause });
   const profile = path.resolve(input.profileDirectory);
+  const ledger = yield* ServerLedger.make({ stateDir: path.join(profile, "t3-processes") });
+  yield* ledger.reapOrphans;
   const authContent = input.authContent ?? (yield* readAuth(profile, input.environment));
   const environment: NodeJS.ProcessEnv = {
     ...input.environment,
@@ -118,10 +112,8 @@ export const make = Effect.fn("KiloRuntime.make")(function* (input: {
     XDG_CACHE_HOME: path.join(profile, "cache"),
     XDG_STATE_HOME: path.join(profile, "state"),
     KILO_DISABLE_AUTOUPDATE: "1",
-    // Repository config and external plugins execute before session permissions.
-    // Keep these forced after instance overrides, including in Full access.
-    KILO_DISABLE_PROJECT_CONFIG: "1",
-    KILO_PURE: "1",
+    // Native configuration is trusted, as with OpenCode. Tool approvals do not
+    // sandbox plugins or MCP initialization, including legacy configuration.
     // Background children outlive root turns and need a separate T3 continuation contract.
     KILO_EXPERIMENTAL_BACKGROUND_SUBAGENTS: "false",
     KILO_SERVER_USERNAME: "kilo",
@@ -157,7 +149,6 @@ export const make = Effect.fn("KiloRuntime.make")(function* (input: {
   // Readiness output can contain project/plugin diagnostics; never include it in client errors.
   return KiloRuntime.of({
     open: Effect.fn("KiloRuntime.open")(function* (directory) {
-      yield* requireSafeRuntime;
       if (closed)
         return yield* new KiloRuntimeError({
           operation: "open",
@@ -183,6 +174,8 @@ export const make = Effect.fn("KiloRuntime.make")(function* (input: {
           ["serve", "--hostname=127.0.0.1", "--port=0"],
           { env: environment, extendEnv: false },
         );
+        // Forget only after the owned group is stopped, including failed readiness.
+        const ledgerScope = yield* Scope.fork(scope);
         const child = yield* spawner
           .spawn(
             ChildProcess.make(command.command, command.args, {
@@ -224,6 +217,12 @@ export const make = Effect.fn("KiloRuntime.make")(function* (input: {
           ),
         );
         yield* Effect.addFinalizer(() => cleanup);
+        const forget = yield* ledger.track({
+          pid: Number(child.pid),
+          port: 0,
+          args: ["serve", "--hostname=127.0.0.1", "--port=0"],
+        });
+        yield* Scope.addFinalizer(ledgerScope, forget);
         const guard = checkAuth.pipe(Effect.onError(() => cleanup));
         // Observe idle or in-flight account replacement as well as request boundaries.
         // Never read credential files once per SSE event.
@@ -247,6 +246,9 @@ export const make = Effect.fn("KiloRuntime.make")(function* (input: {
         const exitCode = child.exitCode.pipe(
           Effect.map(Number),
           Effect.orElseSucceed(() => -1),
+          // Native exit can leave configured MCP/plugin children in the group,
+          // including when no T3 turn is active. The cached cleanup owns that group.
+          Effect.tap(() => cleanup),
         );
         yield* exitCode.pipe(
           Effect.flatMap((code) =>
@@ -262,8 +264,13 @@ export const make = Effect.fn("KiloRuntime.make")(function* (input: {
         );
         const url = yield* Deferred.await(ready).pipe(
           Effect.timeout("30 seconds"),
-          Effect.mapError(
-            fail("startup", "Kilo did not become ready. Check its installation and configuration."),
+          Effect.mapError((cause) =>
+            isRuntimeError(cause)
+              ? cause
+              : fail(
+                  "startup",
+                  "Kilo did not become ready. Check its installation and configuration.",
+                )(cause),
           ),
         );
         const client = yield* KiloSessionClient.make({

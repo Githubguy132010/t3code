@@ -10723,8 +10723,9 @@ export default function ChatView(props: ChatViewProps) {
                   {cloudExecution ? (
                     <p>
                       Last observation: {cloudExecution.observedAt ?? "unavailable"}. Task:{" "}
-                      {cloudExecution.task}. Sandbox: {cloudExecution.sandbox}. Compute:{" "}
-                      {cloudExecution.billing}
+                      {cloudExecution.task}.{" "}
+                      {cloudExecution.result ? `Result: ${cloudExecution.result}. ` : ""}Sandbox:{" "}
+                      {cloudExecution.sandbox}. Compute: {cloudExecution.billing}
                       {cloudExecution.billingAttribution === "payer_shared"
                         ? " (shared account)"
                         : ""}

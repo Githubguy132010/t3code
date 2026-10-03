@@ -20,6 +20,8 @@ import type { ProviderDriver } from "../ProviderDriver.ts";
 import { buildServerProvider } from "../providerSnapshot.ts";
 import { makeManualOnlyProviderMaintenanceCapabilities } from "../providerMaintenance.ts";
 
+const isRuntimeError = Schema.is(KiloRuntime.KiloRuntimeError);
+
 const decode = Schema.decodeSync(KiloSettings);
 const kind = KiloAdapter.KILO_PROVIDER;
 const systemKeys = new Set([
@@ -162,7 +164,8 @@ export const KiloDriver: ProviderDriver<KiloSettings, KiloDriverEnv> = {
           version: null,
           status: "warning",
           auth: { status: "unknown", profileId: input.config.accountId },
-          message: KiloRuntime.localExecutionBlocked.message,
+          message:
+            "Checking Kilo. Native configuration and MCP servers are trusted; tool approvals are not a sandbox.",
         },
       }),
     );
@@ -239,7 +242,7 @@ export const KiloDriver: ProviderDriver<KiloSettings, KiloDriverEnv> = {
                 ...(models.length
                   ? {
                       message:
-                        "Kilo is ready. Model availability and authentication have not been verified by running a prompt. Subagents require Full access mode; Kilo-configured approvals still apply.",
+                        "Kilo is ready. Native configuration and MCP servers are trusted; tool approvals are not a sandbox. Model authentication has not been prompt-tested. Subagents require Full access.",
                     }
                   : {
                       message: `No connected models in the Kilo account profile ${profileDirectory}. Configure this profile with Kilo or set explicit provider environment variables.`,
@@ -249,12 +252,14 @@ export const KiloDriver: ProviderDriver<KiloSettings, KiloDriverEnv> = {
           );
         }).pipe(Effect.scoped);
         latest = yield* check.pipe(
-          Effect.catch(() =>
+          Effect.catch((cause) =>
             Effect.succeed({
               ...latest,
               status: "error" as const,
               installed: false,
-              message: KiloRuntime.localExecutionBlocked.message,
+              message: isRuntimeError(cause)
+                ? cause.message
+                : "Could not refresh Kilo. Check the binary, account profile and native configuration.",
             }),
           ),
         );

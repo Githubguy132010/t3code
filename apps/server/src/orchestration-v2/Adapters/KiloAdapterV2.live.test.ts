@@ -244,8 +244,7 @@ const inference = Effect.acquireRelease(
     }),
 );
 
-// Historical native conformance coverage. Re-enable only after an audited MCP runtime fix.
-describe.skip("Kilo adapter with native runtime and local inference", () => {
+describe.skipIf(!binary)("Kilo adapter with native runtime and local inference", () => {
   it.live(
     "delivers a real streamed turn and restores its native history",
     () =>
@@ -253,6 +252,23 @@ describe.skip("Kilo adapter with native runtime and local inference", () => {
         const fs = yield* FileSystem.FileSystem;
         const path = yield* Path.Path;
         const root = yield* fs.makeTempDirectoryScoped({ prefix: "t3-kilo-adapter-" });
+        // Both legacy MCP sources are trusted native config, even when project
+        // discovery is disabled. The harmless fixture proves actual execution.
+        for (const dir of [".kilo", ".kilocode"]) {
+          yield* fs.makeDirectory(path.join(root, dir));
+          const program = path.join(root, `${dir}-mcp.cjs`);
+          yield* fs.writeFileString(
+            program,
+            `require('node:fs').writeFileSync(${encodeJson(path.join(root, `${dir}-marker`))}, String(process.pid));
+require('node:readline').createInterface({input:process.stdin}).on('line',line=>{const m=JSON.parse(line);if(m.id!==undefined)process.stdout.write(JSON.stringify({jsonrpc:'2.0',id:m.id,result:m.method==='initialize'?{protocolVersion:'2024-11-05',capabilities:{tools:{}},serverInfo:{name:'fixture',version:'1'}}:{tools:[]}})+'\\n')});`,
+          );
+          yield* fs.writeFileString(
+            path.join(root, dir, "mcp.json"),
+            encodeJson({
+              mcpServers: { [dir.slice(1)]: { command: process.execPath, args: [program] } },
+            }),
+          );
+        }
         const model = yield* inference;
         const continuationKey = "account-scope";
         const instanceId = ProviderInstanceId.make("kilo-test");
@@ -269,6 +285,7 @@ describe.skip("Kilo adapter with native runtime and local inference", () => {
           profileDirectory: path.join(root, "profile"),
           environment: {
             PATH: process.env.PATH,
+            HOME: root,
             HTTP_PROXY: process.env.HTTP_PROXY,
             HTTPS_PROXY: process.env.HTTPS_PROXY,
             NO_PROXY: process.env.NO_PROXY,
@@ -422,6 +439,8 @@ describe.skip("Kilo adapter with native runtime and local inference", () => {
           "Hello from local Kilo.",
         );
         assert.isAbove(model.requests.length, 0);
+        for (const dir of [".kilo", ".kilocode"])
+          assert.isTrue(yield* fs.exists(path.join(root, `${dir}-marker`)));
         assert.isTrue(
           seen.some((e) => e.type === "turn_item.updated" && e.turnItem.type === "reasoning"),
         );

@@ -1,4 +1,7 @@
 // @effect-diagnostics nodeBuiltinImport:off - external customer API contract over a loopback socket.
+import * as NodeChildProcess from "node:child_process";
+import * as KiloRuntime from "../../provider/kilo/KiloRuntime.ts";
+import * as KiloAdapter from "./KiloAdapterV2.ts";
 import * as NodeHttp from "node:http";
 import * as NodeEvents from "node:events";
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -16,6 +19,8 @@ import {
 } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
 import * as Schema from "effect/Schema";
+import * as Scope from "effect/Scope";
+import * as Exit from "effect/Exit";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
@@ -37,16 +42,36 @@ const encodeJson = Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown));
 const fixture = Effect.acquireRelease(
   Effect.promise(async () => {
     let submissions = 0;
+    let localResponse: NodeHttp.ServerResponse | undefined;
+    let localRequests = 0;
+    let overlapped = false;
+    const completeLocal = () => {
+      if (!localResponse || submissions < 2) return;
+      overlapped = true;
+      localResponse.writeHead(200, { "content-type": "text/event-stream" });
+      for (const choice of [
+        { delta: { role: "assistant", content: "Local parallel reply" }, finish_reason: null },
+        { delta: {}, finish_reason: "stop" },
+      ])
+        localResponse.write(
+          `data: ${JSON.stringify({ id: "chatcmpl-parallel", object: "chat.completion.chunk", created: 1, model: "test", choices: [{ index: 0, ...choice }] })}\n\n`,
+        );
+      localResponse.end("data: [DONE]\n\n");
+      localResponse = undefined;
+    };
     let signalInterrupt!: () => void;
     const interruptSeen = new Promise<void>((resolve) => {
       signalInterrupt = resolve;
     });
     const control = {
       status: "completed",
+      requireLocalOverlap: false,
       dropNextPrepare: false,
       omittedItemCount: 0,
       missingHistory: false,
       incompleteHistory: false,
+      historyMode: "normal",
+      historyReads: 0,
       interruptAccepted: false,
       interruptPosts: 0,
       permission: false,
@@ -73,6 +98,12 @@ const fixture = Effect.acquireRelease(
       });
       request.on("end", () => {
         const url = new URL(request.url!, "http://localhost");
+        if (url.pathname.endsWith("/chat/completions")) {
+          localRequests++;
+          localResponse = response;
+          completeLocal();
+          return;
+        }
         const operation = url.pathname.split("/").at(-1)!;
         const input = JSON.parse(raw || url.searchParams.get("input") || "{}") as Record<
           string,
@@ -85,6 +116,7 @@ const fixture = Effect.acquireRelease(
         if (operation.startsWith("agentProfiles.")) return reply([]);
         if (operation === "cloudAgentNext.prepareSession") {
           submissions++;
+          completeLocal();
           const suffix = String(submissions).padStart(12, "0");
           const state = {
             cloud: `workspace_12345678-1234-1234-1234-${suffix}`,
@@ -207,10 +239,84 @@ const fixture = Effect.acquireRelease(
           return reply({
             cloudAgentSessionId: state.cloud,
             messageId: input.messageId,
-            status: control.status,
+            status: control.requireLocalOverlap && !localRequests ? "running" : control.status,
           });
         if (operation === "cliSessionsV2.getSessionMessagesPage" && control.missingHistory)
           return reply({ kiloSessionId: state.native, history: null, watermarkEventId: 49 });
+        if (
+          operation === "cliSessionsV2.getSessionMessagesPage" &&
+          control.historyMode !== "normal"
+        ) {
+          control.historyReads++;
+          const message =
+            control.historyMode === "older" && input.cursor === "1"
+              ? state.messages[0]!
+              : state.messages.at(-1)!;
+          const part = {
+            id: `tool-${message.id}`,
+            sessionID: state.native,
+            messageID: `reply-${message.id}`,
+            type: "tool",
+            tool: "read",
+            callID: `call-${message.id}`,
+            state: { status: "completed", input: {}, output: "synthetic" },
+          };
+          const assistant = {
+            info: {
+              id: `reply-${message.id}`,
+              sessionID: state.native,
+              role: "assistant",
+              parentID: message.id,
+              time: { created: 1, completed: 2 },
+            },
+            parts: control.historyMode === "empty" ? [] : [part],
+          };
+          const user = {
+            info: { id: message.id, sessionID: state.native, role: "user", time: { created: 1 } },
+            parts: [],
+          };
+          const page = Number(input.cursor ?? 0);
+          const more = control.historyMode === "paged" && page < 4;
+          return reply({
+            kiloSessionId: state.native,
+            watermarkEventId: 3,
+            history: {
+              nextCursor:
+                control.historyMode === "repeated" ||
+                (control.historyMode === "older" && !input.cursor)
+                  ? "1"
+                  : more
+                    ? String(page + 1)
+                    : null,
+              omittedItemCount: 0,
+              messages: more
+                ? []
+                : [
+                    assistant,
+                    ...(control.historyMode === "unfinished"
+                      ? [
+                          {
+                            info: {
+                              ...assistant.info,
+                              id: `newer-${message.id}`,
+                              time: { created: 3 },
+                            },
+                            parts: [
+                              {
+                                ...part,
+                                id: `newer-tool-${message.id}`,
+                                messageID: `newer-${message.id}`,
+                                state: { status: "running", input: {} },
+                              },
+                            ],
+                          },
+                        ]
+                      : []),
+                    ...(control.historyMode === "repeated" ? [] : [user]),
+                  ],
+            },
+          });
+        }
         if (operation === "cliSessionsV2.getSessionMessagesPage")
           return reply({
             kiloSessionId: state.native,
@@ -272,6 +378,8 @@ const fixture = Effect.acquireRelease(
     return {
       origin: `http://127.0.0.1:${address.port}`,
       submissions: () => submissions,
+      localRequests: () => localRequests,
+      overlapped: () => overlapped,
       conversations,
       control,
       interruptSeen,
@@ -310,6 +418,54 @@ it.live(
         journal,
       };
       const adapter = yield* CloudAdapter.make(adapterOptions);
+      const localInstance = ProviderInstanceId.make("native-parallel");
+      const localSelection = { instanceId: localInstance, model: "fixture/test" };
+      const localCwd = `${directory}/local`;
+      let localAdapter: Adapter.ProviderAdapterV2Shape | undefined;
+      if (process.env.KILO_BIN) {
+        remote.control.requireLocalOverlap = true;
+        yield* fs.makeDirectory(localCwd);
+        yield* Effect.promise(
+          () =>
+            new Promise<void>((resolve, reject) =>
+              NodeChildProcess.execFile("git", ["init", "--quiet", localCwd], (error) =>
+                error ? reject(error) : resolve(),
+              ),
+            ),
+        );
+        const native = yield* KiloRuntime.make({
+          instanceId: "native-parallel",
+          binaryPath: process.env.KILO_BIN,
+          profileDirectory: `${directory}/native-profile`,
+          environment: {
+            PATH: process.env.PATH,
+            HOME: directory,
+            KILO_DISABLE_MODELS_FETCH: "1",
+            KILO_DISABLE_DEFAULT_PLUGINS: "1",
+            KILO_DISABLE_EXTERNAL_SKILLS: "1",
+            KILO_CONFIG_CONTENT: yield* encodeJson({
+              model: "fixture/test",
+              small_model: "fixture/test",
+              plugin: [],
+              provider: {
+                fixture: {
+                  npm: "@ai-sdk/openai-compatible",
+                  name: "Loopback",
+                  options: { baseURL: `${remote.origin}/v1` },
+                  models: { test: { name: "Test", limit: { context: 10000, output: 1000 } } },
+                },
+              },
+            }),
+          },
+        });
+        localAdapter = yield* KiloAdapter.make({
+          instanceId: localInstance,
+          continuationKey: "native-parallel",
+          cwd: localCwd,
+          attachmentsDir: `${directory}/attachments`,
+          runtime: native,
+        });
+      }
       yield* Effect.gen(function* () {
         const orchestrator = yield* Orchestrator.OrchestratorV2;
         const done = yield* Deferred.make<void>();
@@ -321,13 +477,14 @@ it.live(
               ["completed", "failed", "interrupted"].includes(event.payload.status)
             )
               completed.add(event.threadId);
-            return completed.size === 2
+            return completed.size === (localAdapter ? 3 : 2)
               ? Deferred.succeed(done, undefined).pipe(Effect.asVoid)
               : Effect.void;
           }),
           Effect.forkScoped,
         );
-        for (const suffix of ["a", "b"]) {
+        for (const suffix of [...(localAdapter ? ["local"] : []), "a", "b"]) {
+          const selectedModel = suffix === "local" ? localSelection : modelSelection;
           const threadId = ThreadId.make(`cloud-${suffix}`);
           yield* orchestrator.dispatch({
             type: "thread.create",
@@ -337,11 +494,11 @@ it.live(
             threadId,
             projectId: ProjectId.make("cloud-project"),
             title: "Cloud contract",
-            modelSelection,
+            modelSelection: selectedModel,
             runtimeMode: "full-access",
             interactionMode: "default",
             branch: null,
-            worktreePath: `${directory}/must-not-exist-${suffix}`,
+            worktreePath: suffix === "local" ? localCwd : `${directory}/must-not-exist-${suffix}`,
           });
           yield* orchestrator.dispatch({
             type: "message.dispatch",
@@ -352,12 +509,28 @@ it.live(
             messageId: MessageId.make(`user-${suffix}`),
             text: `isolation-${suffix}`,
             attachments: [],
-            modelSelection,
+            modelSelection: selectedModel,
             dispatchMode: { type: "start_immediately" },
           });
         }
         yield* (yield* EffectWorker.OrchestrationEffectWorkerV2).drain();
         yield* Deferred.await(done);
+        if (localAdapter) {
+          assert.isTrue(remote.overlapped());
+          assert.isAbove(remote.localRequests(), 0);
+          const projection = yield* orchestrator.getThreadProjection(ThreadId.make("cloud-local"));
+          assert.equal(
+            projection.runs[0]?.status,
+            "completed",
+            yield* encodeJson(projection.turnItems),
+          );
+          assert.isTrue(
+            projection.messages.some((message) => message.text === "Local parallel reply"),
+          );
+          assert.isFalse(
+            projection.messages.some((message) => message.text.includes("Remote reply")),
+          );
+        }
         for (const suffix of ["a", "b"]) {
           const projection = yield* orchestrator.getThreadProjection(
             ThreadId.make(`cloud-${suffix}`),
@@ -417,25 +590,28 @@ it.live(
         Effect.provide(
           makeOrchestratorV2ReplayLayerWithRegistry(
             { name: "kilo-cloud-contract" },
-            Registry.makeSingleLayer({
-              ...adapter,
-              openSession: (input) =>
-                adapter.openSession(input).pipe(
-                  Effect.map((runtime) => ({
-                    ...runtime,
-                    startTurn: (input) =>
-                      runtime
-                        .startTurn(input)
-                        .pipe(
-                          Effect.catchCause((cause) =>
-                            Effect.logError(Cause.pretty(cause)).pipe(
-                              Effect.andThen(Effect.failCause(cause)),
+            Registry.makeLayer([
+              {
+                ...adapter,
+                openSession: (input) =>
+                  adapter.openSession(input).pipe(
+                    Effect.map((runtime) => ({
+                      ...runtime,
+                      startTurn: (input) =>
+                        runtime
+                          .startTurn(input)
+                          .pipe(
+                            Effect.catchCause((cause) =>
+                              Effect.logError(Cause.pretty(cause)).pipe(
+                                Effect.andThen(Effect.failCause(cause)),
+                              ),
                             ),
                           ),
-                        ),
-                  })),
-                ),
-            }),
+                    })),
+                  ),
+              },
+              ...(localAdapter ? [localAdapter] : []),
+            ]),
           ),
         ),
       );
@@ -655,6 +831,234 @@ it.live(
       assert.isFalse(yield* restored.hasPendingBackgroundWork!);
       assert.equal((yield* journal.read).at(-1)?.state, "failed");
       assert.equal(remote.submissions(), 2);
+      // A completed workspace can have no ingested output. Persist the retrieval
+      // deadline, restart the adapter, and fail locally without changing remote state.
+      remote.control.status = "completed";
+      remote.control.missingHistory = true;
+      remote.control.omittedItemCount = 0;
+      remote.control.incompleteHistory = false;
+      const retrievalScope = yield* Scope.fork(yield* Effect.scope);
+      const retrieving = yield* adapter
+        .openSession({
+          threadId: restore.threadId,
+          providerSessionId: ProviderSessionId.make("retrieval"),
+          modelSelection,
+          runtimePolicy: restore.runtimePolicy,
+        })
+        .pipe(Effect.provideService(Scope.Scope, retrievalScope));
+      const retrievalThread = yield* retrieving.resumeThread({ providerThread: restoredThread });
+      const awaiting = yield* Deferred.make<void>();
+      yield* retrieving.events.pipe(
+        Stream.runForEach((event) =>
+          event.type === "provider_session.updated" &&
+          event.providerSession.lastError?.includes("Awaiting its correlated result")
+            ? Deferred.succeed(awaiting, undefined)
+            : Effect.void,
+        ),
+        Effect.forkIn(retrievalScope),
+      );
+      const retrievalInput = {
+        ...restore,
+        reattach: false,
+        providerThread: retrievalThread,
+        runId: RunId.make("retrieval-run"),
+        attemptId: RunAttemptId.make("retrieval-attempt"),
+        runOrdinal: 4,
+        providerTurnOrdinal: 4,
+        message: {
+          ...restore.message,
+          messageId: MessageId.make("retrieval"),
+          text: "Late result",
+        },
+      };
+      yield* retrieving.startTurn(retrievalInput);
+      yield* Deferred.await(awaiting);
+      const waiting = (yield* journal.read).at(-1)!;
+      assert.equal(waiting.state, "awaiting_result");
+      assert.equal(waiting.remoteState, "completed");
+      assert.isDefined(waiting.resultRecovery?.deadlineMs);
+      assert.isFalse(yield* journal.reserve({ ...waiting, operationKey: "duplicate-retrieval" }));
+      yield* Scope.close(retrievalScope, Exit.void);
+      // Simulate reopening after the durable deadline, without wall-clock sleeps.
+      yield* journal.save({
+        ...waiting,
+        resultRecovery: { ...waiting.resultRecovery!, deadlineMs: 0, nextAttemptMs: 0 },
+      });
+      const afterRestart = yield* adapter.openSession({
+        threadId: restore.threadId,
+        providerSessionId: ProviderSessionId.make("retrieval-restart"),
+        modelSelection,
+        runtimePolicy: restore.runtimePolicy,
+      });
+      const afterThread = yield* afterRestart.resumeThread({ providerThread: retrievalThread });
+      const retrievalEvents: Adapter.ProviderAdapterV2Event[] = [];
+      const retrievalFailed = yield* Deferred.make<void>();
+      yield* afterRestart.events.pipe(
+        Stream.runForEach((event) => {
+          retrievalEvents.push(event);
+          return event.type === "turn.terminal"
+            ? Deferred.succeed(retrievalFailed, undefined)
+            : Effect.void;
+        }),
+        Effect.forkScoped,
+      );
+      remote.control.question = true;
+      const outstanding = yield* afterRestart.readThreadSnapshot({ providerThread: afterThread });
+      assert.isTrue(outstanding.runtimeRequests.some((request) => request.status === "pending"));
+      assert.equal((yield* journal.read).at(-1)?.state, "awaiting_result");
+      // Another client resolves the question; missing output still has a bounded window.
+      remote.control.question = false;
+      const afterQuestion = (yield* journal.read).at(-1)!;
+      yield* journal.save({
+        ...afterQuestion,
+        resultRecovery: { ...afterQuestion.resultRecovery!, deadlineMs: 0, nextAttemptMs: 0 },
+      });
+      const unavailable = yield* afterRestart.readThreadSnapshot({ providerThread: afterThread });
+      yield* Deferred.await(retrievalFailed);
+      assert.equal(unavailable.providerThread.nativeMetadata?.cloudExecution?.task, "completed");
+      assert.equal(
+        unavailable.providerThread.nativeMetadata?.cloudExecution?.result,
+        "unavailable",
+      );
+      assert.equal((yield* journal.read).at(-1)?.state, "failed");
+      const failure = retrievalEvents.find((event) => event.type === "turn.terminal");
+      assert.isTrue(
+        failure?.type === "turn.terminal" &&
+          failure.status === "failed" &&
+          failure.failure?.message.includes("result could not be retrieved"),
+      );
+      remote.control.missingHistory = false;
+      const late = yield* afterRestart.readThreadSnapshot({ providerThread: afterThread });
+      const repeatedLate = yield* afterRestart.readThreadSnapshot({ providerThread: afterThread });
+      assert.equal(
+        late.messages.filter((message) => message.text === "Remote reply: Late result").length,
+        1,
+      );
+      assert.deepEqual(
+        repeatedLate.messages.map((message) => message.id),
+        late.messages.map((message) => message.id),
+      );
+      assert.equal((yield* journal.read).at(-1)?.resultStatus, "available");
+      assert.equal(retrievalEvents.filter((event) => event.type === "turn.terminal").length, 1);
+      assert.equal(remote.submissions(), 2);
+      // Stop during retrieval is local cancellation, never a remote interrupt.
+      remote.control.missingHistory = true;
+      const cancelling = yield* adapter.openSession({
+        threadId: restore.threadId,
+        providerSessionId: ProviderSessionId.make("retrieval-cancel"),
+        modelSelection,
+        runtimePolicy: restore.runtimePolicy,
+      });
+      const cancelThread = yield* cancelling.resumeThread({ providerThread: afterThread });
+      const cancelAwaiting = yield* Deferred.make<void>();
+      yield* cancelling.events.pipe(
+        Stream.runForEach((event) =>
+          event.type === "provider_session.updated" &&
+          event.providerSession.lastError?.includes("Awaiting its correlated result")
+            ? Deferred.succeed(cancelAwaiting, undefined)
+            : Effect.void,
+        ),
+        Effect.forkScoped,
+      );
+      yield* cancelling.startTurn({
+        ...retrievalInput,
+        providerThread: cancelThread,
+        runId: RunId.make("cancel-run"),
+        attemptId: RunAttemptId.make("cancel-attempt"),
+        runOrdinal: 5,
+        providerTurnOrdinal: 5,
+        message: {
+          ...restore.message,
+          messageId: MessageId.make("cancel-retrieval"),
+          text: "Cancel retrieval",
+        },
+      });
+      yield* Deferred.await(cancelAwaiting);
+      const cancellingIntent = (yield* journal.read).at(-1)!;
+      const interruptPosts = remote.control.interruptPosts;
+      yield* cancelling.interruptTurn({
+        providerThread: cancelThread,
+        providerTurnId: cancellingIntent.providerTurn.id,
+      });
+      assert.equal(remote.control.interruptPosts, interruptPosts);
+      const cancelled = (yield* journal.read).at(-1)!;
+      assert.equal(cancelled.state, "interrupted");
+      assert.equal(cancelled.remoteState, "completed");
+      assert.equal(cancelled.resultStatus, "cancelled");
+      remote.control.missingHistory = false;
+      for (const [index, mode] of [
+        "empty",
+        "tool-only",
+        "unfinished",
+        "repeated",
+        "paged",
+      ].entries()) {
+        remote.control.historyMode = mode;
+        remote.control.historyReads = 0;
+        const testScope = yield* Scope.fork(yield* Effect.scope);
+        const runtime = yield* adapter
+          .openSession({
+            threadId: restore.threadId,
+            providerSessionId: ProviderSessionId.make(`result-${mode}`),
+            modelSelection,
+            runtimePolicy: restore.runtimePolicy,
+          })
+          .pipe(Effect.provideService(Scope.Scope, testScope));
+        const selected = yield* runtime.resumeThread({ providerThread: cancelThread });
+        const done = yield* Deferred.make<Adapter.ProviderAdapterV2Event>();
+        const waitingResult = yield* Deferred.make<void>();
+        yield* runtime.events.pipe(
+          Stream.runForEach((event) =>
+            Effect.gen(function* () {
+              if (event.type === "turn.terminal") yield* Deferred.succeed(done, event);
+              if (
+                event.type === "provider_session.updated" &&
+                event.providerSession.lastError?.includes("Awaiting its correlated result")
+              )
+                yield* Deferred.succeed(waitingResult, undefined);
+              if (
+                event.type === "provider_thread.updated" &&
+                event.providerThread.nativeMetadata?.cloudExecution?.task === "admission_unknown"
+              )
+                assert.isUndefined(event.providerThread.nativeMetadata.cloudExecution.result);
+            }),
+          ),
+          Effect.forkIn(testScope),
+        );
+        yield* runtime.startTurn({
+          ...retrievalInput,
+          providerThread: selected,
+          runId: RunId.make(`result-${mode}`),
+          attemptId: RunAttemptId.make(`result-attempt-${mode}`),
+          runOrdinal: 6 + index,
+          providerTurnOrdinal: 6 + index,
+          message: { ...restore.message, messageId: MessageId.make(`result-${mode}`), text: mode },
+        });
+        if (mode === "unfinished" || mode === "repeated") {
+          yield* Deferred.await(waitingResult);
+          const unfinished = (yield* journal.read).at(-1)!;
+          assert.equal(unfinished.state, "awaiting_result");
+          yield* runtime.interruptTurn({
+            providerThread: selected,
+            providerTurnId: unfinished.providerTurn.id,
+          });
+        } else {
+          if (mode === "paged") {
+            yield* Deferred.await(waitingResult);
+            assert.equal(remote.control.historyReads, 4);
+            assert.equal((yield* journal.read).at(-1)?.resultRecovery?.cursor, "4");
+          }
+          const terminal = yield* Deferred.await(done);
+          assert.isTrue(terminal.type === "turn.terminal" && terminal.status === "completed");
+          assert.equal((yield* journal.read).at(-1)?.resultStatus, "available");
+        }
+        yield* Scope.close(testScope, Exit.void);
+      }
+      remote.control.historyMode = "older";
+      const older = yield* cancelling.readThreadSnapshot({ providerThread: cancelThread });
+      assert.isTrue(older.messages.some((message) => message.id === "user-a"));
+      assert.isTrue(older.messages.some((message) => message.id === "result-paged"));
+      remote.control.historyMode = "normal";
       const first = (yield* journal.read)[0]!;
       yield* journal.save({ ...first, interruptRequested: true });
       assert.equal((yield* replacementForStale()).operation, "write");
@@ -694,5 +1098,5 @@ it.live(
         1,
       );
     }).pipe(Effect.scoped, Effect.provide(Layer.mergeAll(NodeServices.layer, IdAllocator.layer))),
-  30_000,
+  60_000,
 );
