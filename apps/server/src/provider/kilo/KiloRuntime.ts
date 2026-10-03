@@ -43,6 +43,44 @@ export class KiloRuntime extends Context.Service<
   }
 >()("t3/provider/kilo/KiloRuntime") {}
 
+const authSchema = Schema.fromJsonString(Schema.Record(Schema.String, Schema.Unknown));
+const decodeAuth = Schema.decodeUnknownEffect(authSchema);
+const encodeAuth = Schema.encodeEffect(authSchema);
+
+/** Freeze the selected credential source; never fall back after a read/parse failure. */
+export const readAuth = Effect.fn("KiloRuntime.readAuth")(function* (
+  profileDirectory: string,
+  environment: NodeJS.ProcessEnv,
+) {
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  return yield* Effect.gen(function* () {
+    const contents =
+      environment.KILO_AUTH_CONTENT ??
+      (yield* fs
+        .readFileString(path.join(profileDirectory, "data", "kilo", "auth.json"))
+        .pipe(
+          Effect.catchTag("PlatformError", (error) =>
+            error.reason._tag === "NotFound" ? Effect.succeed("{}") : Effect.fail(error),
+          ),
+        ));
+    const auth = yield* decodeAuth(contents);
+    // Stable key order keeps harmless formatting changes from retiring sessions.
+    return yield* encodeAuth(
+      Object.fromEntries(Object.entries(auth).toSorted(([a], [b]) => a.localeCompare(b))),
+    );
+  }).pipe(
+    Effect.mapError(
+      () =>
+        new KiloRuntimeError({
+          operation: "authentication",
+          detail:
+            "Could not read the selected Kilo credentials. Check the profile and reload the provider.",
+        }),
+    ),
+  );
+});
+
 /** Every open owns a process. Registry replacement closes the old account's process scopes. */
 export const make = Effect.fn("KiloRuntime.make")(function* (input: {
   readonly instanceId: string;
@@ -50,6 +88,7 @@ export const make = Effect.fn("KiloRuntime.make")(function* (input: {
   /** An XDG root for this account, not the Kilo data directory itself. */
   readonly profileDirectory: string;
   readonly environment: NodeJS.ProcessEnv;
+  readonly authContent?: string;
 }) {
   const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
   const fs = yield* FileSystem.FileSystem;
@@ -60,6 +99,7 @@ export const make = Effect.fn("KiloRuntime.make")(function* (input: {
   const fail = (operation: string, detail: string) => (cause: unknown) =>
     new KiloRuntimeError({ operation, detail, cause });
   const profile = path.resolve(input.profileDirectory);
+  const authContent = input.authContent ?? (yield* readAuth(profile, input.environment));
   const environment: NodeJS.ProcessEnv = {
     ...input.environment,
     XDG_CONFIG_HOME: path.join(profile, "config"),
@@ -70,8 +110,29 @@ export const make = Effect.fn("KiloRuntime.make")(function* (input: {
     // Background children outlive root turns and need a separate T3 continuation contract.
     KILO_EXPERIMENTAL_BACKGROUND_SUBAGENTS: "false",
     KILO_SERVER_USERNAME: "kilo",
+    // The CLI supports this immutable credential source. A login in the selected
+    // profile cannot change credentials underneath an already running process.
+    KILO_AUTH_CONTENT: authContent,
   };
   let closed = false;
+  const checkAuth = Effect.gen(function* () {
+    const current = yield* readAuth(profile, input.environment);
+    if (closed || current !== authContent) {
+      closed = true;
+      return yield* new KiloRuntimeError({
+        operation: "authentication",
+        detail: "Kilo credentials changed. Reload the provider and start a new thread.",
+      });
+    }
+  }).pipe(
+    Effect.provideService(FileSystem.FileSystem, fs),
+    Effect.provideService(Path.Path, path),
+    Effect.tapError(() =>
+      Effect.sync(() => {
+        closed = true;
+      }),
+    ),
+  );
   yield* Scope.addFinalizer(
     owner,
     Effect.sync(() => {
@@ -86,6 +147,7 @@ export const make = Effect.fn("KiloRuntime.make")(function* (input: {
           operation: "open",
           detail: "Kilo account runtime has been retired.",
         });
+      yield* checkAuth;
       const caller = yield* Effect.scope;
       const scope = yield* Scope.fork(owner);
       yield* Scope.addFinalizer(caller, Scope.close(scope, Exit.void));
@@ -146,6 +208,13 @@ export const make = Effect.fn("KiloRuntime.make")(function* (input: {
           ),
         );
         yield* Effect.addFinalizer(() => cleanup);
+        const guard = checkAuth.pipe(Effect.onError(() => cleanup));
+        // Observe idle or in-flight account replacement as well as request boundaries.
+        // Never read credential files once per SSE event.
+        yield* Effect.forever(Effect.sleep("250 millis").pipe(Effect.andThen(guard))).pipe(
+          Effect.ignore,
+          Effect.forkIn(scope),
+        );
         const ready = yield* Deferred.make<string, KiloRuntimeError>();
         let output = "";
         yield* child.stdout.pipe(
@@ -186,6 +255,15 @@ export const make = Effect.fn("KiloRuntime.make")(function* (input: {
           directory,
           baseUrl: url,
           serverPassword: password,
+          beforeRequest: guard.pipe(
+            Effect.mapError(
+              () =>
+                new KiloSessionClient.KiloSessionError({
+                  operation: "authentication",
+                  reason: "wrong_owner",
+                }),
+            ),
+          ),
         }).pipe(
           Effect.mapError(
             fail(

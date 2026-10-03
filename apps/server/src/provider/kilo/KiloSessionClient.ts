@@ -108,6 +108,7 @@ export const make = Effect.fn("KiloSessionClient.make")(function* (input: {
   readonly baseUrl: string;
   readonly serverPassword?: string;
   readonly serverUsername?: string;
+  readonly beforeRequest?: Effect.Effect<void, KiloSessionError>;
 }) {
   const client = createKiloClient({
     baseUrl: input.baseUrl,
@@ -125,10 +126,13 @@ export const make = Effect.fn("KiloSessionClient.make")(function* (input: {
   });
 
   const request = <A>(operation: string, run: (signal: AbortSignal) => Promise<{ data?: A }>) =>
-    Effect.tryPromise({
-      try: run,
-      catch: (cause) => new KiloSessionError({ operation, reason: "request_failed", cause }),
-    }).pipe(
+    (input.beforeRequest ?? Effect.void).pipe(
+      Effect.andThen(
+        Effect.tryPromise({
+          try: run,
+          catch: (cause) => new KiloSessionError({ operation, reason: "request_failed", cause }),
+        }),
+      ),
       Effect.timeout("10 seconds"),
       Effect.catchTag(
         "TimeoutError",
@@ -139,6 +143,7 @@ export const make = Effect.fn("KiloSessionClient.make")(function* (input: {
           ? Effect.fail(new KiloSessionError({ operation, reason: "invalid_response" }))
           : Effect.succeed(response.data),
       ),
+      Effect.tap(() => input.beforeRequest ?? Effect.void),
     );
 
   const acknowledge = (operation: string) => (accepted: unknown) =>

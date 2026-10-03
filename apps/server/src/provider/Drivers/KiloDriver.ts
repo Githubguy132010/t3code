@@ -81,9 +81,21 @@ export const KiloDriver: ProviderDriver<KiloSettings, KiloDriverEnv> = {
         input.instanceId,
         encodeURIComponent(input.config.accountId),
       );
+    const authContent = yield* KiloRuntime.readAuth(profileDirectory, environment).pipe(
+      Effect.mapError(
+        () =>
+          new ProviderDriverError({
+            driver: kind,
+            instanceId: input.instanceId,
+            detail:
+              "Could not read the selected Kilo credentials. Check the profile and reload the provider.",
+          }),
+      ),
+    );
     const identity = [
       path.resolve(profileDirectory),
       input.config.accountId,
+      authContent,
       ...input.environment
         .toSorted((a, b) => a.name.localeCompare(b.name))
         .map((entry) => `${entry.name}=${entry.value}`),
@@ -105,7 +117,17 @@ export const KiloDriver: ProviderDriver<KiloSettings, KiloDriverEnv> = {
       binaryPath: input.config.binaryPath,
       profileDirectory,
       environment,
-    });
+      authContent,
+    }).pipe(
+      Effect.mapError(
+        () =>
+          new ProviderDriverError({
+            driver: kind,
+            instanceId: input.instanceId,
+            detail: "Could not prepare the selected Kilo credentials.",
+          }),
+      ),
+    );
     const orchestrationAdapter = yield* KiloAdapter.make({
       instanceId: input.instanceId,
       continuationKey,

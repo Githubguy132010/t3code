@@ -16,6 +16,12 @@ or instance environment retires its running processes. Existing threads cannot
 resume under the replacement account. A Ready status confirms local CLI readiness;
 it does not prove that a model account is authenticated or has available credit.
 
+Local processes use a fixed credential snapshot. Replacing credentials in the same
+profile retires its processes and prevents old threads from resuming after reload.
+Reload the provider after login or token refresh and start a new thread. Credential
+refresh is conservatively treated as an account change because local account
+identity cannot be verified without contacting each model provider.
+
 Prompts run in the selected T3 workspace. Use separate T3 worktrees for tasks that
 must not share files. Separate conversation IDs alone do not isolate a checkout.
 Stop terminates the task's owned local process group. A later prompt can restore
