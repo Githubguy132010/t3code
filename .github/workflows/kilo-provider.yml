@@ -5,9 +5,9 @@ on:
     paths:
       - .github/workflows/kilo-provider.yml
       - apps/server/src/provider/kilo/**
-      - apps/server/src/provider/Drivers/KiloDriver.ts
+      - apps/server/src/provider/Drivers/Kilo*Driver.ts
       - apps/server/src/provider/builtInDrivers.ts
-      - apps/server/src/orchestration-v2/Adapters/KiloAdapterV2*
+      - apps/server/src/orchestration-v2/**
       - apps/server/src/textGeneration/KiloTextGeneration.ts
       - apps/server/scripts/kilo-stream-benchmark.mjs
       - apps/desktop/scripts/kilo-ui-evidence.mjs
@@ -54,6 +54,10 @@ jobs:
         run: >-
           vp lint apps/server/src/provider/kilo
           apps/server/src/provider/Drivers/KiloDriver.ts
+          apps/server/src/provider/Drivers/KiloCloudDriver.ts
+          apps/server/src/orchestration-v2/Adapters/KiloCloudAdapterV2.ts
+          apps/server/src/orchestration-v2/Adapters/KiloCloudAdapterV2.test.ts
+          apps/server/src/orchestration-v2/Adapters/KiloCloudAdapterV2.live.test.ts
           apps/server/src/orchestration-v2/Adapters/KiloAdapterV2.ts
           apps/server/src/orchestration-v2/Adapters/KiloAdapterV2.live.test.ts
           apps/server/src/textGeneration/KiloTextGeneration.ts
@@ -88,9 +92,15 @@ jobs:
           KILO_BIN: ${{ runner.temp }}/kilo-probe/node_modules/.bin/kilo
           KILO_TEST_ROOT: ${{ runner.temp }}
         run: >-
-          vp test run
+          vp test run --no-file-parallelism
           apps/server/src/provider/kilo
           apps/server/src/orchestration-v2/Adapters/KiloAdapterV2.live.test.ts
+          apps/server/src/orchestration-v2/Adapters/KiloCloudAdapterV2.test.ts
+          apps/server/src/orchestration-v2/ProviderRuntimeRecoveryService.test.ts
+          apps/server/src/orchestration-v2/ProviderSessionManager.test.ts
+          apps/server/src/orchestration-v2/ProviderTurnStartService.test.ts
+          apps/server/src/orchestration-v2/ProviderTurnControlService.test.ts
+          apps/server/src/orchestration-v2/RunExecutionService.test.ts
           apps/server/src/orchestration-v2/Adapters/OpenCodeAdapterV2.test.ts
           apps/server/src/provider/opencodeRuntime.environment.test.ts
           apps/server/src/provider/opencodeRuntime.permissions.test.ts

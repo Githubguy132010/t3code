@@ -544,6 +544,7 @@ it.effect("rechecks run ownership immediately before calling the provider", () =
       providerTurnId: null,
     } as OrchestrationV2RunAttempt;
     const session = {
+      providerSession: { capabilities: { checkpointing: { appCanCheckpointFilesystem: true } } },
       events: Stream.never,
       startTurn: () => Ref.update(providerStarts, (count) => count + 1),
     } as unknown as ProviderAdapterV2SessionRuntime;
@@ -616,6 +617,9 @@ it.effect(
           appThread: { id: threadId } as OrchestrationV2AppThread,
           providerSessionId: ProviderSessionId.make(`session:compact-routing:${index}`),
           session: {
+            providerSession: {
+              capabilities: { checkpointing: { appCanCheckpointFilesystem: true } },
+            },
             events: Stream.never,
             startTurn: () =>
               Effect.sync(() => {
@@ -690,6 +694,9 @@ it.effect("refreshes MCP credential liveness before calling the provider", () =>
         appThread: { id: threadId } as OrchestrationV2AppThread,
         providerSessionId: ProviderSessionId.make("session:run-execution-mcp-liveness"),
         session: {
+          providerSession: {
+            capabilities: { checkpointing: { appCanCheckpointFilesystem: true } },
+          },
           events: Stream.never,
           startTurn: () => Ref.update(order, (entries) => [...entries, "start-turn"]),
         } as unknown as ProviderAdapterV2SessionRuntime,
@@ -801,6 +808,9 @@ it.effect("starts the provider when checkpoint baseline capture fails", () =>
         appThread: { id: threadId } as OrchestrationV2AppThread,
         providerSessionId,
         session: {
+          providerSession: {
+            capabilities: { checkpointing: { appCanCheckpointFilesystem: true } },
+          },
           events: Stream.never,
           startTurn: () => Ref.update(providerStarts, (count) => count + 1),
         } as unknown as ProviderAdapterV2SessionRuntime,
@@ -937,6 +947,9 @@ it.effect.each(["failure", "interruption", "stale-attempt", "start-guard"] as co
           appThread: { id: threadId } as OrchestrationV2AppThread,
           providerSessionId,
           session: {
+            providerSession: {
+              capabilities: { checkpointing: { appCanCheckpointFilesystem: true } },
+            },
             events: Stream.never,
             startTurn: () => Ref.update(providerStarts, (count) => count + 1),
           } as unknown as ProviderAdapterV2SessionRuntime,
@@ -1186,6 +1199,9 @@ it.effect("keeps ingesting owned child events after the root turn terminalizes",
         appThread: { id: threadId } as OrchestrationV2AppThread,
         providerSessionId,
         session: {
+          providerSession: {
+            capabilities: { checkpointing: { appCanCheckpointFilesystem: true } },
+          },
           events: Stream.fromIterable(events),
           startTurn: () => Effect.void,
         } as unknown as ProviderAdapterV2SessionRuntime,
@@ -1566,6 +1582,9 @@ it.effect(
           appThread: { id: ids.threadId } as OrchestrationV2AppThread,
           providerSessionId: ProviderSessionId.make(`session:${key}`),
           session: {
+            providerSession: {
+              capabilities: { checkpointing: { appCanCheckpointFilesystem: true } },
+            },
             events: Stream.empty,
             // Session-wide stays true forever; the root must consult the
             // thread-scoped probe instead of being pinned by siblings.
@@ -1783,6 +1802,9 @@ it.effect("drops late root provider-thread writes from a superseded attempt", ()
         appThread: { id: ids.threadId } as OrchestrationV2AppThread,
         providerSessionId: ProviderSessionId.make(`session:${key}`),
         session: {
+          providerSession: {
+            capabilities: { checkpointing: { appCanCheckpointFilesystem: true } },
+          },
           events: Stream.empty,
           hasPendingBackgroundWork: Effect.succeed(true),
           hasPendingBackgroundWorkForThread: () => Effect.succeed(true),
@@ -1975,6 +1997,9 @@ it.effect(
           appThread: { id: ids.threadId } as OrchestrationV2AppThread,
           providerSessionId: ProviderSessionId.make(`session:${key}`),
           session: {
+            providerSession: {
+              capabilities: { checkpointing: { appCanCheckpointFilesystem: true } },
+            },
             events: Stream.empty,
             hasPendingBackgroundWork: Effect.succeed(true),
             hasPendingBackgroundWorkForThread: () => Effect.succeed(true),
@@ -2135,6 +2160,9 @@ it.effect(
           appThread: { id: ids.threadId } as OrchestrationV2AppThread,
           providerSessionId: ProviderSessionId.make(`session:${key}`),
           session: {
+            providerSession: {
+              capabilities: { checkpointing: { appCanCheckpointFilesystem: true } },
+            },
             events: Stream.empty,
             // Session-wide stays true (sibling has work). Stop must use only
             // the scoped probe for this root's provider thread.
@@ -2319,6 +2347,9 @@ it.effect(
           appThread: { id: ids.threadId } as OrchestrationV2AppThread,
           providerSessionId: ProviderSessionId.make("session:subagent-interrupt-cascade"),
           session: {
+            providerSession: {
+              capabilities: { checkpointing: { appCanCheckpointFilesystem: true } },
+            },
             events: Stream.empty,
             subscribeEvents: Effect.succeed({
               events: Stream.fromIterable([
@@ -2673,6 +2704,9 @@ it.effect(
           appThread: { id: ids.threadId } as OrchestrationV2AppThread,
           providerSessionId: ProviderSessionId.make("session:subagent-link-survives-terminal"),
           session: {
+            providerSession: {
+              capabilities: { checkpointing: { appCanCheckpointFilesystem: true } },
+            },
             events: Stream.empty,
             subscribeEvents: Effect.succeed({
               events: Stream.fromIterable([
@@ -3332,6 +3366,9 @@ function captureRootRunTermination(input: {
         appThread: { id: ids.threadId } as OrchestrationV2AppThread,
         providerSessionId: ProviderSessionId.make(`session:${input.key}`),
         session: {
+          providerSession: {
+            capabilities: { checkpointing: { appCanCheckpointFilesystem: true } },
+          },
           events: Stream.empty,
           subscribeEvents: Effect.succeed({
             events:
@@ -3800,6 +3837,9 @@ function runBackgroundItemScenario(
         appThread: { id: ids.threadId } as OrchestrationV2AppThread,
         providerSessionId: ProviderSessionId.make(`session:${key}`),
         session: {
+          providerSession: {
+            capabilities: { checkpointing: { appCanCheckpointFilesystem: true } },
+          },
           events: Stream.empty,
           subscribeEvents: Effect.gen(function* () {
             yield* options?.onSubscribe ?? Effect.void;

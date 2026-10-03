@@ -186,6 +186,117 @@ export const make = Effect.gen(function* () {
       continueAfterRestart: boolean,
     ) {
       const now = yield* DateTime.now;
+      // Remote execution survives this process. Keep its turns and requests;
+      // startup reattaches journal-bound observers without sending a new prompt.
+      const cloudThreads = new Set(
+        projection.providerThreads
+          .filter((thread) => thread.driver === "kilo-cloud")
+          .map((thread) => thread.id),
+      );
+      const cloudRuns = nonterminalRuns(projection).filter(
+        (run) => run.providerThreadId !== null && cloudThreads.has(run.providerThreadId),
+      );
+      if (cloudThreads.size > 0) {
+        const events: OrchestrationV2DomainEvent[] = [];
+        const effects: EffectOutbox.PendingOrchestrationEffectV2[] = [];
+        for (const run of cloudRuns) {
+          const commandId = CommandId.make(
+            `command:cloud-reattach:${run.id}:${run.activeAttemptId}`,
+          );
+          if (run.status !== "queued" && trigger !== "startup") continue;
+          if (run.status === "queued" && run.queueHeld === true) continue;
+          if (run.status !== "queued") {
+            const existing = yield* outbox
+              .listByCommandId(commandId)
+              .pipe(
+                Effect.mapError(
+                  (cause) => new ProviderRuntimeRecoveryError({ operation: "reconcile", cause }),
+                ),
+              );
+            if (
+              existing.some(
+                (effect) =>
+                  effect.request.type === "provider-turn.reattach" &&
+                  (effect.status === "pending" || effect.status === "running"),
+              )
+            )
+              continue;
+            effects.push({
+              id: `effect:cloud-reattach:${run.id}:${run.activeAttemptId}:${DateTime.formatIso(now)}`,
+              commandId,
+              threadId: projection.thread.id,
+              request: { type: "provider-turn.reattach", runId: run.id },
+            });
+          }
+          events.push({
+            id: yield* ids.allocate
+              .event({ threadId: projection.thread.id, commandId })
+              .pipe(
+                Effect.mapError(
+                  (cause) => new ProviderRuntimeRecoveryError({ operation: "reconcile", cause }),
+                ),
+              ),
+            type: "run.updated",
+            threadId: projection.thread.id,
+            runId: run.id,
+            ...(run.rootNodeId ? { nodeId: run.rootNodeId } : {}),
+            providerInstanceId: run.providerInstanceId,
+            occurredAt: now,
+            payload:
+              run.status === "queued"
+                ? { ...run, queueHeld: true }
+                : { ...run, status: "starting" },
+          });
+        }
+        if (events.length || effects.length)
+          yield* eventSink.writeWithEffects({ events, effects }).pipe(
+            Effect.mapError(
+              (cause) =>
+                new ProviderRuntimeRecoveryError({
+                  operation: "reconcile",
+                  threadId: projection.thread.id,
+                  cause,
+                }),
+            ),
+          );
+        const remoteRunIds = new Set(
+          projection.runs
+            .filter(
+              (run) => run.providerThreadId !== null && cloudThreads.has(run.providerThreadId),
+            )
+            .map((run) => run.id),
+        );
+        const remoteTurnIds = new Set(
+          projection.providerTurns
+            .filter((turn) => cloudThreads.has(turn.providerThreadId))
+            .map((turn) => turn.id),
+        );
+        projection = {
+          ...projection,
+          runs: projection.runs.filter((run) => !remoteRunIds.has(run.id)),
+          attempts: projection.attempts.filter((attempt) => !remoteRunIds.has(attempt.runId)),
+          nodes: projection.nodes.filter(
+            (node) => node.runId === null || !remoteRunIds.has(node.runId),
+          ),
+          subagents: projection.subagents.filter(
+            (agent) => agent.runId === null || !remoteRunIds.has(agent.runId),
+          ),
+          providerSessions: projection.providerSessions.filter(
+            (session) => session.driver !== "kilo-cloud",
+          ),
+          providerThreads: projection.providerThreads.filter(
+            (thread) => !cloudThreads.has(thread.id),
+          ),
+          providerTurns: projection.providerTurns.filter((turn) => !remoteTurnIds.has(turn.id)),
+          runtimeRequests: projection.runtimeRequests.filter(
+            (request) =>
+              request.providerTurnId === null || !remoteTurnIds.has(request.providerTurnId),
+          ),
+          turnItems: projection.turnItems.filter(
+            (item) => item.runId === null || !remoteRunIds.has(item.runId),
+          ),
+        };
+      }
       const runs = [] as Array<OrchestrationV2ThreadProjection["runs"][number]>;
       for (const run of nonterminalRuns(projection)) {
         if (run.status === "waiting") {

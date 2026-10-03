@@ -1550,8 +1550,18 @@ export const layerWithOptions = (
           sessionOpen.withLock(
             input.providerSessionId,
             Effect.gen(function* () {
+              const adapter = yield* registry.get(input.modelSelection.instanceId).pipe(
+                Effect.mapError(
+                  (cause) =>
+                    new ProviderSessionOpenError({
+                      instanceId: input.modelSelection.instanceId,
+                      providerSessionId: input.providerSessionId,
+                      cause,
+                    }),
+                ),
+              );
               const cwd = input.runtimePolicy.cwd;
-              if (cwd !== null) {
+              if (cwd !== null && adapter.driver !== "kilo-cloud") {
                 const workspaceIsDirectory = yield* fileSystem.stat(cwd).pipe(
                   Effect.map((stat) => stat.type === "Directory"),
                   Effect.catch((error) => Effect.succeed(error.reason._tag !== "NotFound")),
@@ -1585,20 +1595,10 @@ export const layerWithOptions = (
                 return existing.exposedRuntime;
               }
 
-              const adapter = yield* registry.get(input.modelSelection.instanceId).pipe(
-                Effect.mapError(
-                  (cause) =>
-                    new ProviderSessionOpenError({
-                      instanceId: input.modelSelection.instanceId,
-                      providerSessionId: input.providerSessionId,
-                      cause,
-                    }),
-                ),
-              );
-              const prepared = yield* prepareMcpSession(
-                input.threadId,
-                input.modelSelection.instanceId,
-              );
+              const prepared: PreparedMcpCredential =
+                adapter.driver === "kilo-cloud"
+                  ? { mcpCredentialId: undefined, issued: false }
+                  : yield* prepareMcpSession(input.threadId, input.modelSelection.instanceId);
               const mcpCredentialId = prepared.mcpCredentialId;
               // The reservation from prepare protects the credential (which
               // eager adapters bake into the provider process during

@@ -115,6 +115,19 @@ await NodeFSP.writeFile(
       ]),
     ),
     providerInstances: {
+      kiloCloud: {
+        driver: "kilo-cloud",
+        displayName: "Kilo Cloud",
+        enabled: !!process.env.KILO_CLOUD_TEST_PROFILE,
+        config: {
+          enabled: !!process.env.KILO_CLOUD_TEST_PROFILE,
+          profileDirectory: process.env.KILO_CLOUD_TEST_PROFILE ?? "",
+          repository: "thomasbrugman/t3-kilo-cloud-test",
+          branch: "main",
+          model: "deepseek/deepseek-v4.1-flash",
+          cloudConsent: !!process.env.KILO_CLOUD_TEST_PROFILE,
+        },
+      },
       kilo: {
         driver: "kilo",
         displayName: "Kilo",
@@ -182,17 +195,41 @@ try {
   await page.getByText("Local folder", { exact: true }).click();
   await page.getByPlaceholder("Enter path (e.g. ~/projects/my-app)").fill(workspace);
   await page.getByPlaceholder("Enter path (e.g. ~/projects/my-app)").press("Enter");
+  if (process.env.KILO_CLOUD_TEST_PROFILE) {
+    await page.locator("[data-chat-provider-model-picker-label]").click();
+    await page.getByPlaceholder("Search models...").fill("deepseek-v4.1-flash");
+    await page.getByText("deepseek/deepseek-v4.1-flash", { exact: true }).last().click();
+    await page
+      .getByText("Closing T3 does not stop remote work or billing.", { exact: false })
+      .waitFor();
+    await page.getByRole("button", { name: "Unknown", exact: true }).click();
+    await page.getByRole("menuitemradio", { name: /^Low/ }).click();
+    await page.getByRole("button", { name: "Low", exact: true }).waitFor();
+    await page.screenshot({
+      animations: "disabled",
+      path: NodePath.join(evidence, "cloud-before-send.png"),
+    });
+  }
   await page.locator("[data-chat-provider-model-picker-label]").click();
   await page.getByPlaceholder("Search models...").fill("Local fixture");
   await page.getByText("Local fixture", { exact: true }).last().click();
   await page.getByRole("button", { name: "Local fixture", exact: true }).waitFor();
   await page.locator("[contenteditable=true]").fill("Kilo local integration: say hello.");
-  await page.screenshot({ path: NodePath.join(evidence, "before-send.png") });
+  await page.screenshot({
+    animations: "disabled",
+    path: NodePath.join(evidence, "before-send.png"),
+  });
   await page.getByRole("button", { name: "Submit message", exact: true }).click();
   await page.getByText(answer, { exact: true }).waitFor({ timeout: 60000 });
-  await page.screenshot({ path: NodePath.join(evidence, "streamed-answer.png") });
+  await page.screenshot({
+    animations: "disabled",
+    path: NodePath.join(evidence, "streamed-answer.png"),
+  });
   await page.getByRole("button", { name: "Submit message", exact: true }).waitFor();
-  await page.screenshot({ path: NodePath.join(evidence, "completed-answer.png") });
+  await page.screenshot({
+    animations: "disabled",
+    path: NodePath.join(evidence, "completed-answer.png"),
+  });
   console.log("Local native answer rendered; opening provider settings.");
   await page.getByRole("button", { name: "Settings", exact: true }).click();
   await page.waitForURL("**/settings/general*");
@@ -200,7 +237,27 @@ try {
   await page.getByRole("button", { name: "Providers", exact: true }).click();
   await page.waitForURL("**/settings/providers*");
   await page.getByRole("button", { name: "Add provider", exact: true }).waitFor();
-  await page.screenshot({ path: NodePath.join(evidence, "provider-settings.png") });
+  if (process.env.KILO_CLOUD_TEST_PROFILE) {
+    const consent = page.getByRole("switch", { name: "Allow paid cloud execution", exact: true });
+    await consent.click();
+    await page.waitForFunction(
+      () =>
+        document
+          .querySelector('[role="switch"][aria-label="Allow paid cloud execution"]')
+          ?.getAttribute("aria-checked") === "false",
+    );
+    await consent.click();
+    await page.waitForFunction(
+      () =>
+        document
+          .querySelector('[role="switch"][aria-label="Allow paid cloud execution"]')
+          ?.getAttribute("aria-checked") === "true",
+    );
+  }
+  await page.screenshot({
+    animations: "disabled",
+    path: NodePath.join(evidence, "provider-settings.png"),
+  });
   await context.close();
   if (!requests) throw new Error("The real CLI did not contact the local inference fixture");
   await NodeFSP.writeFile(

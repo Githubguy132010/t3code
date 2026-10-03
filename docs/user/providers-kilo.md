@@ -33,5 +33,30 @@ You can select models and control tasks from web, desktop, and mobile clients
 connected to the environment. Configure account profiles in web or desktop
 settings. A disconnected client does not stop its task.
 
-Kilo Cloud Agents are not available in this preview. No cloud task is launched and
-no repository is uploaded by selecting this provider.
+For remote execution, add a separate **Kilo Cloud** instance in Settings > Providers.
+Select a profile signed in through the official Kilo login, a GitHub repository that
+account can access, its branch, and a model. Enable paid cloud execution only when
+you want prompts and that repository sent to Kilo. T3 never uploads your local
+checkout or uncommitted changes. Local Kilo and Kilo Cloud can run concurrently in
+separate threads; each cloud thread has its own remote worktree.
+
+Cloud execution currently requires **Full access**. The deployed cloud runtime
+does not apply custom agent permissions, so T3 refuses restricted and Plan modes
+before submitting a paid task. Shell, edits and subagents cannot be restricted in
+cloud Full access. Cloud subagent history is not integrated. Use local Kilo when
+you need approvals or restricted execution. Inherited Kilo profiles with setup,
+MCP, skills, agents or environment variables are rejected before a new cloud task.
+
+Cloud prompts, native history and follow-up messages use the same remote session.
+T3 reconnects by its saved task identity and does not automatically resend an
+uncertain start. A cloud thread cannot use local attachments, terminals, file
+checkpoints, rewind, forks or background text generation. Switching accounts does
+not transfer existing tasks or stop them.
+
+Cloud tasks spend Kilo credit for inference and sandbox use. Automatic commits are
+disabled, but an agent in Full access can still modify the remote checkout. Stop
+requests inference interruption; closing a stream, task completion and sandbox
+sleep are separate events. The thread shows task, sandbox and compute status
+separately. Compute estimates can cover a shared account sandbox and are not a
+per-task invoice. Unknown or settling status does not mean billing has stopped.
+T3 does not top up credit or force a sandbox to sleep.

@@ -1003,6 +1003,53 @@ export const KiloSettings = makeProviderSettingsSchema(
 );
 export type KiloSettings = typeof KiloSettings.Type;
 
+export const KiloCloudSettings = makeProviderSettingsSchema(
+  {
+    enabled: Schema.Boolean.pipe(
+      Schema.withDecodingDefault(Effect.succeed(false)),
+      Schema.annotateKey({ providerSettingsForm: { hidden: true } }),
+    ),
+    profileDirectory: TrimmedString.pipe(
+      Schema.withDecodingDefault(Effect.succeed("")),
+      Schema.annotateKey({
+        title: "Kilo profile directory",
+        description:
+          "XDG root signed in with the official Kilo CLI. Personal accounts only. Credentials stay on this environment.",
+      }),
+    ),
+    repository: TrimmedString.pipe(
+      Schema.withDecodingDefault(Effect.succeed("")),
+      Schema.annotateKey({
+        title: "Cloud repository",
+        description:
+          "GitHub owner/repository that Kilo can access. Kilo clones this repository; local files and uncommitted changes are not uploaded.",
+      }),
+    ),
+    branch: TrimmedNonEmptyString.pipe(
+      Schema.withDecodingDefault(Effect.succeed("main")),
+      Schema.annotateKey({ title: "Repository branch" }),
+    ),
+    model: TrimmedNonEmptyString.pipe(
+      Schema.withDecodingDefault(Effect.succeed("deepseek/deepseek-v4.1-flash")),
+      Schema.annotateKey({
+        title: "Cloud model",
+        description: "Kilo model ID. Availability is checked by Kilo when submitting a prompt.",
+      }),
+    ),
+    cloudConsent: Schema.Boolean.pipe(
+      Schema.withDecodingDefault(Effect.succeed(false)),
+      Schema.annotateKey({
+        title: "Allow paid cloud execution",
+        providerSettingsForm: { control: "switch", clearWhenEmpty: "persist" },
+        description:
+          "Prompts and the selected repository are sent to Kilo. Model and sandbox charges use your Kilo account. Closing T3 does not stop a remote task or guarantee billing has stopped. T3 never tops up credit. Cloud execution currently requires Full access, including remote shell, edits and subagents. Automatic commits are disabled.",
+      }),
+    ),
+  },
+  { order: ["profileDirectory", "repository", "branch", "model", "cloudConsent"] },
+);
+export type KiloCloudSettings = typeof KiloCloudSettings.Type;
+
 /**
  * A read-only quota source outside this environment's provider CLIs. The
  * only kind today is a CLIProxyAPI hub, whose management API reports the

@@ -144,9 +144,15 @@ export const executorLayer: Layer.Layer<
                     }),
                 ),
               );
+          case "provider-turn.reattach":
           case "provider-turn.start":
             return providerTurnStart
-              .start({ threadId: effect.threadId, runId: effect.request.runId, willRetry })
+              .start({
+                threadId: effect.threadId,
+                runId: effect.request.runId,
+                willRetry,
+                ...(effect.request.type === "provider-turn.reattach" ? { reattach: true } : {}),
+              })
               .pipe(
                 Effect.mapError(
                   (cause) =>

@@ -134,7 +134,7 @@ export function ProviderIcon(props: ProviderIconProps) {
     );
   }
 
-  if (props.provider === "kilo") {
+  if (props.provider === "kilo" || props.provider === "kilo-cloud") {
     return (
       <Svg width={size} height={size} viewBox="0 0 512 512">
         {kiloIconPaths.map((path) => (

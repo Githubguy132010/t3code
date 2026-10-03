@@ -3131,8 +3131,15 @@ export default function ChatView(props: ChatViewProps) {
   const selectedProvider = selectedProviderEntry?.driverKind ?? requestedDriverKind;
   const activeProviderInstanceId = selectedProviderEntry?.instanceId ?? null;
   const activeProviderStatus = selectedProviderEntry?.snapshot ?? null;
+  const isCloudComposer = activeProviderStatus?.driver === "kilo-cloud";
+  const persistedProviderThread = serverProjection?.providerThreads.find(
+    (thread) => thread.id === serverProjection.thread.activeProviderThreadId,
+  );
+  const cloudExecution = persistedProviderThread?.nativeMetadata?.cloudExecution;
+  const isCloudThread =
+    !!cloudExecution || persistedProviderThread?.driver === "kilo-cloud" || isCloudComposer;
   const { enabled: interactionModeEnabled, interactionMode } = resolveComposerInteractionMode({
-    planModeEnabled: settings.planModeEnabled,
+    planModeEnabled: settings.planModeEnabled && !isCloudComposer,
     provider: activeProviderStatus,
     interactionMode:
       composerInteractionMode ?? activeThread?.interactionMode ?? DEFAULT_INTERACTION_MODE,
@@ -4137,7 +4144,7 @@ export default function ChatView(props: ChatViewProps) {
     [keybindings, terminalShortcutLabelOptions],
   );
   const onToggleDiff = useCallback(() => {
-    if (!isServerThread) {
+    if (isCloudThread || !isServerThread) {
       return;
     }
     if (!diffOpen) {
@@ -4146,7 +4153,7 @@ export default function ChatView(props: ChatViewProps) {
     if (activeThreadRef) {
       useRightPanelStore.getState().toggle(activeThreadRef, "diff");
     }
-  }, [activeThreadRef, diffOpen, isServerThread, onDiffPanelOpen]);
+  }, [activeThreadRef, diffOpen, isCloudThread, isServerThread, onDiffPanelOpen]);
 
   const needsLoadBalancing = automaticEnvironment && !draftThread?.loadBalancedEnvironmentId;
   const loadBalancingCandidates = useMemo(
@@ -4491,7 +4498,7 @@ export default function ChatView(props: ChatViewProps) {
     [activeThreadRef, storeSetTerminalOpen],
   );
   const toggleTerminalVisibility = useCallback(() => {
-    if (!activeThreadRef) return;
+    if (isCloudThread || !activeThreadRef) return;
     const nextOpen = !terminalUiState.terminalOpen;
     if (nextOpen && terminalUiState.terminalIds.length === 0) {
       if (!activeThreadId || !activeProject) {
@@ -4532,10 +4539,17 @@ export default function ChatView(props: ChatViewProps) {
     storeEnsureTerminal,
     terminalUiState.terminalIds.length,
     terminalUiState.terminalOpen,
+    isCloudThread,
   ]);
   const splitTerminal = useCallback(
     (direction: "horizontal" | "vertical" = "horizontal") => {
-      if (!activeThreadRef || hasReachedSplitLimit || !activeThreadId || !activeProject) {
+      if (
+        isCloudThread ||
+        !activeThreadRef ||
+        hasReachedSplitLimit ||
+        !activeThreadId ||
+        !activeProject
+      ) {
         return;
       }
       const cwdForOpen = gitCwd ?? activeProject.workspaceRoot;
@@ -4564,6 +4578,7 @@ export default function ChatView(props: ChatViewProps) {
       });
     },
     [
+      isCloudThread,
       activeProject,
       activeThreadId,
       allocatableActiveTerminalIds,
@@ -4578,7 +4593,7 @@ export default function ChatView(props: ChatViewProps) {
     ],
   );
   const createNewTerminal = useCallback(() => {
-    if (!activeThreadRef || !activeThreadId || !activeProject) {
+    if (isCloudThread || !activeThreadRef || !activeThreadId || !activeProject) {
       return;
     }
     const cwdForOpen = gitCwd ?? activeProject.workspaceRoot;
@@ -4602,6 +4617,7 @@ export default function ChatView(props: ChatViewProps) {
       },
     });
   }, [
+    isCloudThread,
     activeProject,
     activeThreadId,
     allocatableActiveTerminalIds,
@@ -4656,7 +4672,7 @@ export default function ChatView(props: ChatViewProps) {
         rememberAsLastInvoked?: boolean;
       },
     ) => {
-      if (!activeThreadId || !activeProject || !activeThread) return;
+      if (isCloudThread || !activeThreadId || !activeProject || !activeThread) return;
       if (options?.rememberAsLastInvoked !== false) {
         setLastInvokedScriptByProjectId((current) => {
           if (current[activeProject.id] === script.id) return current;
@@ -4745,6 +4761,7 @@ export default function ChatView(props: ChatViewProps) {
       }
     },
     [
+      isCloudThread,
       activeProject,
       activeThread,
       activeThreadId,
@@ -5022,18 +5039,18 @@ export default function ChatView(props: ChatViewProps) {
     [activeThreadRef, openPreview],
   );
   const addDiffSurface = useCallback(() => {
-    if (!activeThreadRef || !isServerThread || !isGitRepo) return;
+    if (isCloudThread || !activeThreadRef || !isServerThread || !isGitRepo) return;
     useDiffPanelStore.getState().selectGitScope(activeThreadRef, "branch");
     useRightPanelStore.getState().open(activeThreadRef, "diff");
     onDiffPanelOpen?.();
-  }, [activeThreadRef, isGitRepo, isServerThread, onDiffPanelOpen]);
+  }, [activeThreadRef, isCloudThread, isGitRepo, isServerThread, onDiffPanelOpen]);
   const openChangesFromThreadPanel = useCallback(() => {
     addDiffSurface();
   }, [addDiffSurface]);
   const addFilesSurface = useCallback(() => {
-    if (!activeThreadRef || !activeProject) return;
+    if (isCloudThread || !activeThreadRef || !activeProject) return;
     useRightPanelStore.getState().open(activeThreadRef, "files");
-  }, [activeProject, activeThreadRef]);
+  }, [activeProject, activeThreadRef, isCloudThread]);
   const supportsThreadPullRequests =
     serverConfig?.environment.capabilities.threadPullRequests === true;
   const visiblePullRequests = visibleThreadPullRequests(
@@ -5132,10 +5149,10 @@ export default function ChatView(props: ChatViewProps) {
   }, [activePreviewMiniPlayer, activeThreadRef, deviceState.sessions, deviceStateLoaded]);
   const openFileSurface = useCallback(
     (relativePath: string) => {
-      if (!activeThreadRef || !activeProject) return;
+      if (isCloudThread || !activeThreadRef || !activeProject) return;
       useRightPanelStore.getState().openFile(activeThreadRef, relativePath);
     },
-    [activeProject, activeThreadRef],
+    [activeProject, activeThreadRef, isCloudThread],
   );
   // The thread's own change request, placed against the project it belongs to. Without a
   // project there is nothing to resolve it against, so the caller falls back to the browser.
@@ -5439,7 +5456,7 @@ export default function ChatView(props: ChatViewProps) {
     previewPanelOpen,
   ]);
   const addTerminalSurface = useCallback(() => {
-    if (!activeThreadRef || !activeThreadId || !activeProject) return;
+    if (isCloudThread || !activeThreadRef || !activeThreadId || !activeProject) return;
     const cwd = gitCwd ?? activeProject.workspaceRoot;
     const terminalId = nextTerminalId(allocatableActiveTerminalIds);
     useRightPanelStore.getState().openTerminal(activeThreadRef, terminalId);
@@ -5463,11 +5480,13 @@ export default function ChatView(props: ChatViewProps) {
     activeThreadRef,
     activeThreadWorktreePath,
     allocatableActiveTerminalIds,
+    isCloudThread,
     gitCwd,
     openTerminal,
   ]);
   const splitPanelTerminal = useCallback(
     (direction: "horizontal" | "vertical" = "horizontal") => {
+      if (isCloudThread) return;
       if (
         !activeThreadRef ||
         !activeThreadId ||
@@ -5498,6 +5517,7 @@ export default function ChatView(props: ChatViewProps) {
       });
     },
     [
+      isCloudThread,
       activeProject,
       activeRightPanelSurface,
       activeThreadId,
@@ -5571,13 +5591,14 @@ export default function ChatView(props: ChatViewProps) {
     [activeThreadRef, diffOpen, onDiffPanelOpen],
   );
   const toggleRightPanel = useCallback(() => {
+    if (isCloudThread) return;
     if (!activeThreadRef) return;
     if (rightPanelOpen) {
       closePreviewPanel();
       return;
     }
     useRightPanelStore.getState().toggleVisibility(activeThreadRef);
-  }, [activeThreadRef, closePreviewPanel, rightPanelOpen]);
+  }, [isCloudThread, activeThreadRef, closePreviewPanel, rightPanelOpen]);
   const toggleThreadPanel = useCallback(() => {
     if (!activeThreadRef) return;
     useRightPanelStore.getState().toggleThreadPanel(activeThreadRef, threadPanelPresentation);
@@ -7430,6 +7451,22 @@ export default function ChatView(props: ChatViewProps) {
         return;
       }
 
+      if (
+        isCloudThread &&
+        [
+          "terminal.toggle",
+          "terminal.new",
+          "terminal.split",
+          "terminal.splitVertical",
+          "rightPanel.toggle",
+          "diff.toggle",
+        ].includes(command ?? "")
+      ) {
+        event.preventDefault();
+        event.stopPropagation();
+        return;
+      }
+
       if (command === "terminal.toggle") {
         event.preventDefault();
         event.stopPropagation();
@@ -7626,6 +7663,7 @@ export default function ChatView(props: ChatViewProps) {
     confirmAndUnpinThread,
     copyActiveThreadReference,
     getShortcutContext,
+    isCloudThread,
     toggleRightPanel,
     toggleThreadPanel,
     toggleTerminalVisibility,
@@ -8662,7 +8700,7 @@ export default function ChatView(props: ChatViewProps) {
         models: provider.models,
         modelOptions: selection.options,
         promptInjectionState: getComposerPromptInjectionState(messageTextForSend),
-        planModeEnabled: settings.planModeEnabled,
+        planModeEnabled: settings.planModeEnabled && !isCloudComposer,
       });
       const text = formatOutgoingPrompt({
         provider: provider.driverKind,
@@ -8680,7 +8718,7 @@ export default function ChatView(props: ChatViewProps) {
         ),
         text,
         interactionMode: resolveComposerInteractionMode({
-          planModeEnabled: settings.planModeEnabled,
+          planModeEnabled: settings.planModeEnabled && !isCloudComposer,
           provider: provider.snapshot,
           interactionMode: sendInteractionMode,
         }).interactionMode,
@@ -10202,13 +10240,13 @@ export default function ChatView(props: ChatViewProps) {
   }, []);
   const onOpenTurnDiff = useCallback(
     (runId: RunId, filePath?: string) => {
-      if (!isServerThread || !activeThreadRef) return;
+      if (isCloudThread || !isServerThread || !activeThreadRef) return;
       explicitDiffOpenRef.current = diffOpen ? null : activeThreadRef;
       useDiffPanelStore.getState().selectTurn(activeThreadRef, runId, filePath);
       useRightPanelStore.getState().open(activeThreadRef, "diff");
       onDiffPanelOpen?.();
     },
-    [activeThreadRef, diffOpen, isServerThread, onDiffPanelOpen],
+    [activeThreadRef, diffOpen, isCloudThread, isServerThread, onDiffPanelOpen],
   );
   // The revert handler is read from a ref at call-time so the callback
   // reference is fully stable and never busts TimelineRowCtx identity.
@@ -10256,162 +10294,163 @@ export default function ChatView(props: ChatViewProps) {
     return <NoActiveThreadState />;
   }
 
-  const rightPanelContent = activeThreadRef ? (
-    renderedRightPanelSurface?.kind === "preview" ? (
-      <Suspense fallback={null}>
-        <PreviewPanel
-          mode="embedded"
-          threadRef={activeThreadRef}
-          tabId={renderedRightPanelSurface.resourceId}
-          configuredUrls={configuredPreviewUrls}
+  const rightPanelContent =
+    activeThreadRef && !isCloudThread ? (
+      renderedRightPanelSurface?.kind === "preview" ? (
+        <Suspense fallback={null}>
+          <PreviewPanel
+            mode="embedded"
+            threadRef={activeThreadRef}
+            tabId={renderedRightPanelSurface.resourceId}
+            configuredUrls={configuredPreviewUrls}
+            visible={rightPanelOpen}
+            onSendAnnotation={(annotation, image) => {
+              void onSend(undefined, "auto", "foreground", { annotation, image });
+            }}
+          />
+        </Suspense>
+      ) : renderedRightPanelSurface?.kind === "terminal" ? (
+        <PersistentThreadTerminalPanel
           visible={rightPanelOpen}
-          onSendAnnotation={(annotation, image) => {
-            void onSend(undefined, "auto", "foreground", { annotation, image });
-          }}
-        />
-      </Suspense>
-    ) : renderedRightPanelSurface?.kind === "terminal" ? (
-      <PersistentThreadTerminalPanel
-        visible={rightPanelOpen}
-        threadRef={activeThreadRef}
-        surface={renderedRightPanelSurface}
-        launchContext={activeTerminalLaunchContext ?? null}
-        focusRequestId={terminalFocusRequestId}
-        keybindings={keybindings}
-        onAddTerminalContext={addTerminalContextToDraft}
-        onSplitTerminal={splitPanelTerminal}
-        onSplitTerminalVertical={splitPanelTerminalVertical}
-        onNewTerminal={addTerminalSurface}
-        onActiveTerminalChange={activatePanelTerminal}
-        onCloseTerminal={closePanelTerminal}
-        splitShortcutLabel={splitTerminalShortcutLabel ?? undefined}
-        splitVerticalShortcutLabel={splitTerminalVerticalShortcutLabel ?? undefined}
-        newShortcutLabel={newTerminalShortcutLabel ?? undefined}
-        closeShortcutLabel={closeTerminalShortcutLabel ?? undefined}
-      />
-    ) : renderedRightPanelSurface?.kind === "diff" ? (
-      <Suspense fallback={null}>
-        <DiffPanel
-          key={activeThreadKey}
-          mode="embedded"
-          composerDraftTarget={composerDraftTarget}
-          workspaceMutationId={workspaceMutationId}
-        />
-      </Suspense>
-    ) : renderedRightPanelSurface?.kind === "pull-request" && !pullRequestsCapabilityKnown ? (
-      <PullRequestDetailGhost />
-    ) : renderedRightPanelSurface?.kind === "pull-request" && !supportsPullRequests ? (
-      <PullRequestsUnavailableState
-        title="Pull requests unavailable"
-        error="Update this environment's T3 Code server to browse pull requests."
-      />
-    ) : renderedRightPanelSurface?.kind === "pull-request" ? (
-      // No onClose: the surface tab's own X owns closing here, and a second X in the header
-      // would be the same action twice. The thread context also drops the checkout button, so it
-      // is only right for the thread's own pull request, whose branch is already under the
-      // reader's feet. A link the agent wrote can open any other one here, and that one has to be
-      // checkable out like it is anywhere else.
-      <PullRequestDetailPanel
-        getShortcutContext={getShortcutContext}
-        shortcutsEnabled={
-          rightPanelOpen && activeRightPanelSurface?.id === renderedRightPanelSurface.id
-        }
-        key={`${renderedRightPanelSurface.host ?? ""}:${renderedRightPanelSurface.repository}#${renderedRightPanelSurface.number}`}
-        environmentId={activeThread.environmentId}
-        onSelectPullRequest={(reference) => {
-          if (activeThreadRef)
-            useRightPanelStore.getState().openPullRequest(activeThreadRef, {
-              projectId: reference.projectId,
-              repository: reference.repository,
-              number: reference.number,
-              ...(reference.host ? { host: reference.host } : {}),
-            });
-        }}
-        threadRef={activeThreadRef}
-        reference={{
-          projectId: renderedRightPanelSurface.projectId as ProjectId,
-          ...(renderedRightPanelSurface.host ? { host: renderedRightPanelSurface.host } : {}),
-          repository: renderedRightPanelSurface.repository,
-          number: renderedRightPanelSurface.number,
-        }}
-        context={pullRequestPanelContext(
-          {
-            projectId: activeThread.projectId,
-            pullRequests: visiblePullRequests,
-            linkedPullRequest: linkedThreadPullRequest,
-          },
-          renderedRightPanelSurface,
-        )}
-        composerDraftTarget={composerDraftTarget}
-        onBack={
-          activeThreadRef !== null && pullRequestsSurfaceAvailable && visiblePullRequestCount > 1
-            ? addPullRequestsSurface
-            : undefined
-        }
-      />
-    ) : renderedRightPanelSurface?.kind === "pull-requests" && activeThreadRef ? (
-      <ThreadPullRequestsPanel threadRef={activeThreadRef} />
-    ) : renderedRightPanelSurface?.kind === "device" ? (
-      <Suspense fallback={null}>
-        <DevicePanel
-          mode="embedded"
           threadRef={activeThreadRef}
-          key={renderedRightPanelSurface.id}
           surface={renderedRightPanelSurface}
-          visible={rightPanelOpen}
-          onDismissSetup={() => {
-            closeRightPanelSurface(renderedRightPanelSurface);
-            useRightPanelStore.getState().show(activeThreadRef);
-          }}
-        />
-      </Suspense>
-    ) : (renderedRightPanelSurface?.kind === "files" ||
-        renderedRightPanelSurface?.kind === "file") &&
-      ((activeProject && activeWorkspaceRoot) ||
-        (renderedRightPanelSurface.kind === "file" && renderedRightPanelSurface.attachment)) ? (
-      <Suspense fallback={null}>
-        <FilePreviewPanel
-          key={`${activeThread.environmentId}:${
-            renderedRightPanelSurface.kind === "file" && renderedRightPanelSurface.attachment
-              ? `attachment:${renderedRightPanelSurface.attachment.id}`
-              : activeWorkspaceRoot
-          }`}
-          environmentId={activeThread.environmentId}
-          cwd={activeWorkspaceRoot ?? ""}
-          projectName={activeProject?.title ?? ""}
-          threadRef={activeThreadRef}
-          composerDraftTarget={composerDraftTarget}
+          launchContext={activeTerminalLaunchContext ?? null}
+          focusRequestId={terminalFocusRequestId}
           keybindings={keybindings}
-          availableEditors={availableEditors}
-          relativePath={
-            renderedRightPanelSurface.kind === "file"
-              ? renderedRightPanelSurface.relativePath
-              : null
-          }
-          {...(renderedRightPanelSurface.kind === "file" && renderedRightPanelSurface.attachment
-            ? { attachment: renderedRightPanelSurface.attachment }
-            : {})}
-          revealLine={
-            renderedRightPanelSurface.kind === "file"
-              ? (renderedRightPanelSurface.revealLine ?? null)
-              : null
-          }
-          revealRequestId={
-            renderedRightPanelSurface.kind === "file"
-              ? renderedRightPanelSurface.revealRequestId
-              : 0
-          }
-          onOpenFile={openFileSurface}
-          onPendingChange={handleFilePendingChange}
-          selectedFilePending={
-            renderedRightPanelSurface.kind === "file" &&
-            pendingFileSurfaceIds.has(renderedRightPanelSurface.id)
-          }
-          workspaceMutationId={workspaceMutationId}
+          onAddTerminalContext={addTerminalContextToDraft}
+          onSplitTerminal={splitPanelTerminal}
+          onSplitTerminalVertical={splitPanelTerminalVertical}
+          onNewTerminal={addTerminalSurface}
+          onActiveTerminalChange={activatePanelTerminal}
+          onCloseTerminal={closePanelTerminal}
+          splitShortcutLabel={splitTerminalShortcutLabel ?? undefined}
+          splitVerticalShortcutLabel={splitTerminalVerticalShortcutLabel ?? undefined}
+          newShortcutLabel={newTerminalShortcutLabel ?? undefined}
+          closeShortcutLabel={closeTerminalShortcutLabel ?? undefined}
         />
-      </Suspense>
-    ) : null
-  ) : null;
+      ) : renderedRightPanelSurface?.kind === "diff" ? (
+        <Suspense fallback={null}>
+          <DiffPanel
+            key={activeThreadKey}
+            mode="embedded"
+            composerDraftTarget={composerDraftTarget}
+            workspaceMutationId={workspaceMutationId}
+          />
+        </Suspense>
+      ) : renderedRightPanelSurface?.kind === "pull-request" && !pullRequestsCapabilityKnown ? (
+        <PullRequestDetailGhost />
+      ) : renderedRightPanelSurface?.kind === "pull-request" && !supportsPullRequests ? (
+        <PullRequestsUnavailableState
+          title="Pull requests unavailable"
+          error="Update this environment's T3 Code server to browse pull requests."
+        />
+      ) : renderedRightPanelSurface?.kind === "pull-request" ? (
+        // No onClose: the surface tab's own X owns closing here, and a second X in the header
+        // would be the same action twice. The thread context also drops the checkout button, so it
+        // is only right for the thread's own pull request, whose branch is already under the
+        // reader's feet. A link the agent wrote can open any other one here, and that one has to be
+        // checkable out like it is anywhere else.
+        <PullRequestDetailPanel
+          getShortcutContext={getShortcutContext}
+          shortcutsEnabled={
+            rightPanelOpen && activeRightPanelSurface?.id === renderedRightPanelSurface.id
+          }
+          key={`${renderedRightPanelSurface.host ?? ""}:${renderedRightPanelSurface.repository}#${renderedRightPanelSurface.number}`}
+          environmentId={activeThread.environmentId}
+          onSelectPullRequest={(reference) => {
+            if (activeThreadRef)
+              useRightPanelStore.getState().openPullRequest(activeThreadRef, {
+                projectId: reference.projectId,
+                repository: reference.repository,
+                number: reference.number,
+                ...(reference.host ? { host: reference.host } : {}),
+              });
+          }}
+          threadRef={activeThreadRef}
+          reference={{
+            projectId: renderedRightPanelSurface.projectId as ProjectId,
+            ...(renderedRightPanelSurface.host ? { host: renderedRightPanelSurface.host } : {}),
+            repository: renderedRightPanelSurface.repository,
+            number: renderedRightPanelSurface.number,
+          }}
+          context={pullRequestPanelContext(
+            {
+              projectId: activeThread.projectId,
+              pullRequests: visiblePullRequests,
+              linkedPullRequest: linkedThreadPullRequest,
+            },
+            renderedRightPanelSurface,
+          )}
+          composerDraftTarget={composerDraftTarget}
+          onBack={
+            activeThreadRef !== null && pullRequestsSurfaceAvailable && visiblePullRequestCount > 1
+              ? addPullRequestsSurface
+              : undefined
+          }
+        />
+      ) : renderedRightPanelSurface?.kind === "pull-requests" && activeThreadRef ? (
+        <ThreadPullRequestsPanel threadRef={activeThreadRef} />
+      ) : renderedRightPanelSurface?.kind === "device" ? (
+        <Suspense fallback={null}>
+          <DevicePanel
+            mode="embedded"
+            threadRef={activeThreadRef}
+            key={renderedRightPanelSurface.id}
+            surface={renderedRightPanelSurface}
+            visible={rightPanelOpen}
+            onDismissSetup={() => {
+              closeRightPanelSurface(renderedRightPanelSurface);
+              useRightPanelStore.getState().show(activeThreadRef);
+            }}
+          />
+        </Suspense>
+      ) : (renderedRightPanelSurface?.kind === "files" ||
+          renderedRightPanelSurface?.kind === "file") &&
+        ((activeProject && activeWorkspaceRoot) ||
+          (renderedRightPanelSurface.kind === "file" && renderedRightPanelSurface.attachment)) ? (
+        <Suspense fallback={null}>
+          <FilePreviewPanel
+            key={`${activeThread.environmentId}:${
+              renderedRightPanelSurface.kind === "file" && renderedRightPanelSurface.attachment
+                ? `attachment:${renderedRightPanelSurface.attachment.id}`
+                : activeWorkspaceRoot
+            }`}
+            environmentId={activeThread.environmentId}
+            cwd={activeWorkspaceRoot ?? ""}
+            projectName={activeProject?.title ?? ""}
+            threadRef={activeThreadRef}
+            composerDraftTarget={composerDraftTarget}
+            keybindings={keybindings}
+            availableEditors={availableEditors}
+            relativePath={
+              renderedRightPanelSurface.kind === "file"
+                ? renderedRightPanelSurface.relativePath
+                : null
+            }
+            {...(renderedRightPanelSurface.kind === "file" && renderedRightPanelSurface.attachment
+              ? { attachment: renderedRightPanelSurface.attachment }
+              : {})}
+            revealLine={
+              renderedRightPanelSurface.kind === "file"
+                ? (renderedRightPanelSurface.revealLine ?? null)
+                : null
+            }
+            revealRequestId={
+              renderedRightPanelSurface.kind === "file"
+                ? renderedRightPanelSurface.revealRequestId
+                : 0
+            }
+            onOpenFile={openFileSurface}
+            onPendingChange={handleFilePendingChange}
+            selectedFilePending={
+              renderedRightPanelSurface.kind === "file" &&
+              pendingFileSurfaceIds.has(renderedRightPanelSurface.id)
+            }
+            workspaceMutationId={workspaceMutationId}
+          />
+        </Suspense>
+      ) : null
+    ) : null;
   const threadDetailsPanelProps: ThreadDetailsPanelProps = {
     anchor: threadPanelPopoverAnchorRef,
     handle: threadPanelPopoverHandle,
@@ -10452,7 +10491,9 @@ export default function ChatView(props: ChatViewProps) {
       ? { onCheckoutPullRequestRequest: openPullRequestDialog }
       : {}),
     onComposerFocusRequest: scheduleComposerFocus,
-    ...(isServerThread && isGitRepo ? { onOpenChanges: openChangesFromThreadPanel } : {}),
+    ...(isServerThread && isGitRepo && !isCloudThread
+      ? { onOpenChanges: openChangesFromThreadPanel }
+      : {}),
     versionMismatch:
       showVersionMismatchBanner && versionMismatch
         ? {
@@ -10468,7 +10509,7 @@ export default function ChatView(props: ChatViewProps) {
     onDeleteProjectScript: deleteProjectScript,
   };
   const panelToggleControlProps = {
-    terminalAvailable: activeProject !== null,
+    terminalAvailable: activeProject !== null && !isCloudThread,
     terminalOpen: terminalUiState.terminalOpen,
     terminalShortcutLabel: shortcutLabelForCommand(keybindings, "terminal.toggle"),
     threadPanelOpen,
@@ -10477,7 +10518,7 @@ export default function ChatView(props: ChatViewProps) {
     threadPanelShortcutLabel: shortcutLabelForCommand(keybindings, "threadPanel.toggle"),
     threadPanelHasAttention:
       activeEnvironmentUnavailableState !== null || showVersionMismatchBanner,
-    rightPanelAvailable: activeProject !== null,
+    rightPanelAvailable: activeProject !== null && !isCloudThread,
     rightPanelOpen,
     rightPanelShortcutLabel: shortcutLabelForCommand(keybindings, "rightPanel.toggle"),
     onToggleTerminal: toggleTerminalVisibility,
@@ -10644,6 +10685,37 @@ export default function ChatView(props: ChatViewProps) {
             ) : null}
             {/* Banners overlay the timeline without changing its content height. */}
             <div className="pointer-events-none absolute inset-x-0 top-0 z-20 flex flex-col">
+              {isCloudThread ? (
+                <div
+                  role="status"
+                  className="pointer-events-auto border-b bg-background px-4 py-2 text-xs text-muted-foreground"
+                >
+                  <strong>
+                    Kilo Cloud
+                    {cloudExecution
+                      ? ` · ${cloudExecution.repository} · ${cloudExecution.branch}`
+                      : ""}
+                  </strong>
+                  <p>
+                    Remote repository. Local files, terminal and checkpoints are unavailable.
+                    Closing T3 does not stop remote work or billing.
+                  </p>
+                  {cloudExecution ? (
+                    <p>
+                      Last observation: {cloudExecution.observedAt ?? "unavailable"}. Task:{" "}
+                      {cloudExecution.task}. Sandbox: {cloudExecution.sandbox}. Compute:{" "}
+                      {cloudExecution.billing}
+                      {cloudExecution.billingAttribution === "payer_shared"
+                        ? " (shared account)"
+                        : ""}
+                      {cloudExecution.estimatedHourlyRateUsd === null
+                        ? ""
+                        : ` · estimated $${cloudExecution.estimatedHourlyRateUsd.toFixed(2)}/hour`}
+                      . Inference is charged separately.
+                    </p>
+                  ) : null}
+                </div>
+              ) : null}
               <ProviderStatusBanner
                 status={visibleProviderStatus}
                 onDismiss={() => setDismissedProviderStatusBannerKey(providerStatusBannerKey)}
@@ -11169,7 +11241,7 @@ export default function ChatView(props: ChatViewProps) {
             key={mountedThreadKey}
             threadRef={mountedThreadRef}
             threadId={mountedThreadRef.threadId}
-            active={mountedThreadKey === activeThreadKey}
+            active={mountedThreadKey === activeThreadKey && !isCloudThread}
             launchContext={
               mountedThreadKey === activeThreadKey ? (activeTerminalLaunchContext ?? null) : null
             }
@@ -11217,9 +11289,9 @@ export default function ChatView(props: ChatViewProps) {
           onAddPullRequests={addPullRequestsSurface}
           onAddDevice={addDeviceSurface}
           browserAvailable={isPreviewSupportedInRuntime()}
-          terminalAvailable={activeProject !== null}
-          diffAvailable={isServerThread && isGitRepo}
-          filesAvailable={activeProject !== null}
+          terminalAvailable={activeProject !== null && !isCloudThread}
+          diffAvailable={isServerThread && isGitRepo && !isCloudThread}
+          filesAvailable={activeProject !== null && !isCloudThread}
           pullRequestAvailable={pullRequestSurfaceAvailable}
           pullRequestsAvailable={pullRequestsSurfaceAvailable}
           deviceAvailable={activeThreadRef !== null}
@@ -11272,9 +11344,9 @@ export default function ChatView(props: ChatViewProps) {
             onAddPullRequests={addPullRequestsSurface}
             onAddDevice={addDeviceSurface}
             browserAvailable={isPreviewSupportedInRuntime()}
-            terminalAvailable={activeProject !== null}
-            diffAvailable={isServerThread && isGitRepo}
-            filesAvailable={activeProject !== null}
+            terminalAvailable={activeProject !== null && !isCloudThread}
+            diffAvailable={isServerThread && isGitRepo && !isCloudThread}
+            filesAvailable={activeProject !== null && !isCloudThread}
             pullRequestAvailable={pullRequestSurfaceAvailable}
             pullRequestsAvailable={pullRequestsSurfaceAvailable}
             deviceAvailable={activeThreadRef !== null}
