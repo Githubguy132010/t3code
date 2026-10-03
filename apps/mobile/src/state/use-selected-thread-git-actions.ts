@@ -120,7 +120,7 @@ export function useSelectedThreadGitActions() {
       return;
     }
     void refreshSelectedThreadGitStatus({ quiet: true });
-  }, [refreshSelectedThreadGitStatus, selectedThread, selectedThreadProject]);
+  }, [refreshSelectedThreadGitStatus, selectedThread, selectedThreadCwd, selectedThreadProject]);
 
   const runSelectedThreadGitMutation = useCallback(
     async <T, E>(

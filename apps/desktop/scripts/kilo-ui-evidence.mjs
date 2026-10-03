@@ -244,7 +244,7 @@ try {
   await page.getByRole("button", { name: "Add provider", exact: true }).waitFor();
   if (verifyBlocked) {
     await page.getByRole("button", { name: "Select Kilo", exact: true }).click();
-    await page.getByText("Local Kilo execution is disabled:", { exact: false }).waitFor();
+    await page.getByText("Local Kilo execution is disabled:", { exact: false }).first().waitFor();
     await page.screenshot({
       animations: "disabled",
       path: NodePath.join(evidence, "local-execution-blocked.png"),
